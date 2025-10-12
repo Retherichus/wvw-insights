@@ -1,0 +1,3 @@
+// Icon resources
+ICON_NORMAL RCDATA "src/Icon.png"
+ICON_HOVER RCDATA "src/Icon_Hover.png"
