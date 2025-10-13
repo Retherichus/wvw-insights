@@ -1,8 +1,5 @@
 use anyhow::Result;
 
-pub const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-pub const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
-
 #[derive(Debug)]
 pub struct WorkerMessage {
     pub index: usize,

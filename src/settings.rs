@@ -33,6 +33,8 @@ pub struct Settings {
     pub auto_cleanup_enabled: bool,
     #[serde(default = "default_cleanup_days")]
     pub auto_cleanup_days: u32,
+    #[serde(default)]
+    pub mouse_lock_enabled: bool,
 }
 
 fn default_cleanup_days() -> u32 {
@@ -54,6 +56,7 @@ impl Settings {
             report_history: Vec::new(),
             auto_cleanup_enabled: false,
             auto_cleanup_days: 30,
+            mouse_lock_enabled: false,
         }
     }
 
@@ -63,6 +66,7 @@ impl Settings {
         self.show_formatted_timestamps = true;
         self.auto_cleanup_enabled = false;
         self.auto_cleanup_days = 30;
+        self.mouse_lock_enabled = false;
     }
 
     pub fn get() -> MutexGuard<'static, Self> {
@@ -80,13 +84,62 @@ impl Settings {
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
+        log::info!("Loading settings from: {:?}", path);
+        
         if path.exists() {
             let contents = std::fs::read_to_string(path)?;
-            let settings: Self = serde_json::from_str(&contents)?;
+            log::info!("Settings file contents: {}", contents);
+            let mut settings: Self = serde_json::from_str(&contents)?;
+            
+            // Fix empty API endpoint
+            if settings.api_endpoint.is_empty() {
+                log::warn!("API endpoint was empty, setting to default");
+                settings.api_endpoint = "https://parser.rethl.net/api.php".to_string();
+            }
+            
+            // Auto-sync with ArcDPS if log directory is empty
+            if settings.log_directory.is_empty() {
+                log::info!("Log directory is empty, attempting to sync with ArcDPS...");
+                match crate::arcdps::sync_with_arcdps() {
+                    Ok(arcdps_path) => {
+                        log::info!("Auto-synced log directory from ArcDPS: {}", arcdps_path);
+                        settings.log_directory = arcdps_path;
+                    }
+                    Err(e) => {
+                        log::warn!("Could not auto-sync with ArcDPS: {}, using default", e);
+                        settings.log_directory = Self::default_log_dir().display().to_string();
+                    }
+                }
+            }
+            
+            log::info!("Parsed settings - log_directory: '{}'", settings.log_directory);
             *SETTINGS.lock().unwrap() = settings;
         } else {
+            log::info!("Settings file doesn't exist, initializing defaults");
             let mut settings = SETTINGS.lock().unwrap();
             settings.init();
+            
+            // Try to auto-sync with ArcDPS on first launch
+            log::info!("First launch - attempting to sync with ArcDPS...");
+            drop(settings); // Drop the lock before calling sync
+            
+            match crate::arcdps::sync_with_arcdps() {
+                Ok(arcdps_path) => {
+                    log::info!("Auto-synced log directory from ArcDPS: {}", arcdps_path);
+                    let mut settings = SETTINGS.lock().unwrap();
+                    settings.log_directory = arcdps_path;
+                }
+                Err(e) => {
+                    log::warn!("Could not auto-sync with ArcDPS: {}, using default", e);
+                    // Keep the default from init()
+                }
+            }
+            
+            log::info!("Initialized settings - log_directory: '{}'", SETTINGS.lock().unwrap().log_directory);
+            // Save the initialized settings
+            let settings = SETTINGS.lock().unwrap();
+            settings.store(path)?;
+            log::info!("Saved initialized settings to disk");
         }
         Ok(())
     }

@@ -31,6 +31,7 @@ struct UploadResponse {
 struct StatusResponse {
     status: String,
     progress: Option<f32>,
+    #[allow(dead_code)]
     logs: Option<Vec<LogEntry>>,
     files: Option<Vec<FileEntry>>,
     heartbeat: Option<Heartbeat>,
@@ -38,8 +39,10 @@ struct StatusResponse {
 
 #[derive(Debug, Deserialize)]
 struct LogEntry {
+    #[allow(dead_code)]
     message: String,
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     log_type: String,
 }
 
