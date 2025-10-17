@@ -1,9 +1,9 @@
 [package]
 name = "wvw_insights"
-version = "1.0.4"
+version = "1.0.6"
 edition = "2021"
 authors = ["Retherichus"]
-description = "Uploads WvW logs WvW Insights"
+description = "Upload WvW logs for analysis on WvW Insights."
 
 [lib]
 crate-type = ["cdylib"]
@@ -32,6 +32,8 @@ features = ["log", "log_filter"]
 [dependencies.winapi]
 version = "0.3"
 features = ["libloaderapi", "minwindef", "shellapi", "winuser"]
+
+
 
 [build-dependencies]
 embed-resource = "2.4"

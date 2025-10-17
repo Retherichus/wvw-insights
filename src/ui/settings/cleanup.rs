@@ -271,7 +271,7 @@ pub fn render_cleanup_tab(ui: &Ui) {
     // Upload history management
     ui.text_colored([1.0, 1.0, 0.0, 1.0], "Upload History");
     ui.spacing();
-    ui.text_wrapped("Clear the list of previously uploaded logs. This won't delete any files, just resets the green highlighting in the log selection screen.");
+    ui.text_wrapped("Clear the list of previously uploaded logs.\nThis won't delete any files, just resets the green highlighting in the log selection screen.\n");
     ui.spacing();
 
     let uploaded = crate::uploaded_logs::UploadedLogs::get();

@@ -3,6 +3,7 @@ pub mod general;
 pub mod history;
 pub mod qol;
 pub mod tokens;
+pub mod webhooks;
 
 use nexus::imgui::Ui;
 
@@ -36,14 +37,19 @@ pub fn render_settings(ui: &Ui, config_path: &std::path::Path) {
         ACTIVE_TAB.set(2);
     }
     ui.same_line();
-    if ui.button("Cleanup") {
+    if ui.button("Webhooks") {
         active_tab = 3;
         ACTIVE_TAB.set(3);
     }
     ui.same_line();
-    if ui.button("QoL") {
+    if ui.button("Cleanup") {
         active_tab = 4;
         ACTIVE_TAB.set(4);
+    }
+    ui.same_line();
+    if ui.button("QoL") {
+        active_tab = 5;
+        ACTIVE_TAB.set(5);
     }
 
     ui.spacing();
@@ -55,8 +61,9 @@ pub fn render_settings(ui: &Ui, config_path: &std::path::Path) {
         0 => general::render_general_tab(ui, config_path),
         1 => tokens::render_tokens_tab(ui, config_path),
         2 => history::render_history_tab(ui, config_path),
-        3 => cleanup::render_cleanup_tab(ui),
-        4 => qol::render_qol_tab(ui, config_path),  // ADD THIS
+        3 => webhooks::render_webhooks_tab(ui, config_path),
+        4 => cleanup::render_cleanup_tab(ui),
+        5 => qol::render_qol_tab(ui, config_path),
         _ => {}
     }
 

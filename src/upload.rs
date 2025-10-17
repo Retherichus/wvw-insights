@@ -140,8 +140,20 @@ pub fn start_processing(
     session_id: &str,
     history_token: &str,
     ownership_token: &str,
+    guild_name: &str,
+    enable_legacy_parser: bool,
 ) -> Result<String> {
     let url = format!("{}?endpoint=nexus-process", api_endpoint);
+    
+    // Use the guild name if provided, otherwise use the default
+    let final_guild_name = if guild_name.trim().is_empty() {
+        "WvW Insights Parser (Nexus)"
+    } else {
+        guild_name
+    };
+    
+    // Convert bool to "0" or "1" for PHP
+    let legacy_parser_value = if enable_legacy_parser { "1" } else { "0" };
     
     let response = CLIENT.with(|c| {
         c.post(&url)
@@ -149,6 +161,8 @@ pub fn start_processing(
                 ("session_id", session_id),
                 ("history_token", history_token),
                 ("ownership_token", ownership_token),
+                ("guild_name", final_guild_name),
+                ("enable_old_parser", legacy_parser_value),
             ])
     })?;
 
@@ -165,7 +179,7 @@ pub fn start_processing(
     }
 }
 
-pub fn check_status(api_endpoint: &str, session_id: &str) -> Result<(String, Option<String>, f32, Option<String>)> {
+pub fn check_status(api_endpoint: &str, session_id: &str) -> Result<(String, Option<Vec<String>>, f32, Option<String>)> {
     let url = format!("{}?endpoint=process-status&session_id={}", api_endpoint, session_id);
     
     let response = CLIENT.with(|c| c.get(&url).call())?;
@@ -180,22 +194,25 @@ pub fn check_status(api_endpoint: &str, session_id: &str) -> Result<(String, Opt
         .and_then(|h| h.component)
         .map(|c| get_phase_message(&c, progress));
     
-    let report_url = if status_resp.status == "complete" {
+    let report_urls = if status_resp.status == "complete" {
         status_resp.files
-            .and_then(|files| {
-                files.iter().find_map(|f| {
-                    if f.name.contains("Report.html") {
-                        Some(f.url.clone())
-                    } else {
-                        None
-                    }
-                })
+            .map(|files| {
+                files.iter()
+                    .filter_map(|f| {
+                        // Include both main and legacy reports
+                        if f.name.contains("Report.html") || f.name.contains("LegacyReport.html") {
+                            Some(f.url.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
             })
     } else {
         None
     };
     
-    Ok((status_resp.status, report_url, progress, phase))
+    Ok((status_resp.status, report_urls, progress, phase))
 }
 
 fn get_phase_message(component: &str, progress: f32) -> String {
@@ -211,29 +228,56 @@ fn get_phase_message(component: &str, progress: f32) -> String {
     }
     
     match component {
+        // Regular processing components
         "initialization" => "Initializing processing environment",
         "config_verification" => "Verifying configuration files",
         "elite_insights_start" => "Starting Elite Insights analysis",
         "elite_insights_executing" => "Running Elite Insights CLI",
-        "elite_insights_processing" => "Processing log data",
-        "elite_insights_complete" => "Elite Insights completed",
-        "topstats_start" => "Starting TopStats analysis",
-        "topstats_parsing" => "Parsing combat data",
-        "topstats_processing" => "Analyzing performance metrics",
-        "topstats_complete" => "Finalizing statistics",
-        "json_processing" => "Processing JSON data",
-        "tiddlywiki_start" => "Starting report generation",
+        "elite_insights_processing" => "Processing log data with Elite Insights",
+        "elite_insights_complete" => "Elite Insights processing completed",
+        "topstats_start" => "Starting TopStats statistical analysis",
+        "topstats_parsing" => "Parsing combat data with TopStats",
+        "topstats_processing" => "Analyzing player performance metrics",
+        "topstats_file_processing" => "Processing combat log files",
+        "topstats_document_creation" => "Generating statistical documents",
+        "topstats_complete" => "Finalizing combat statistics",
+        "json_processing" => "Processing JSON combat data",
+        "highscores_injection" => "Injecting high scores data",
+        "tiddlywiki_start" => "Starting TiddlyWiki report generation",
+        "tiddlywiki_initializing" => "Initializing TiddlyWiki report engine",
+        "tiddlywiki_setup" => "Setting up wiki environment",
+        "tiddlywiki_init" => "Initializing wiki workspace",
+        "tiddlywiki_import" => "Importing combat data into template",
         "tiddlywiki_build" => "Building interactive report",
-        "tiddlywiki_finalize" => "Finalizing report",
+        "tiddlywiki_finalize" => "Finalizing report structure",
+        "tiddlywiki_save" => "Saving final HTML report",
+        
+        // Legacy parser components
+        "legacy_parser_start" => "Starting legacy report generation",
+        "legacy_start" => "Starting legacy parser processing",
+        "legacy_setup" => "Setting up legacy workspace",
+        "legacy_moved_files" => "Processing log files for legacy parser",
+        "legacy_tw5_done" => "Building legacy TiddlyWiki report",
+        "legacy_cleanup" => "Finalizing legacy report",
+        
         "cleanup" => "Cleaning up temporary files",
         "complete" => "Processing complete",
+        
         _ => {
             // Fallback to progress-based messages
-            if progress < 15.0 { "Initializing..." }
-            else if progress < 25.0 { "Processing with Elite Insights..." }
-            else if progress < 55.0 { "Running statistical analysis..." }
-            else if progress < 85.0 { "Generating report..." }
-            else if progress < 95.0 { "Finalizing..." }
+            if progress < 5.0 { "Initializing processing environment" }
+            else if progress < 10.0 { "Verifying configuration files" }
+            else if progress < 15.0 { "Starting Elite Insights analysis" }
+            else if progress < 25.0 { "Processing logs with Elite Insights" }
+            else if progress < 30.0 { "Starting TopStats analysis" }
+            else if progress < 45.0 { "Analyzing player performance metrics" }
+            else if progress < 55.0 { "Finalizing combat statistics" }
+            else if progress < 60.0 { "Processing JSON combat data" }
+            else if progress < 65.0 { "Starting report generation" }
+            else if progress < 75.0 { "Building interactive report components" }
+            else if progress < 85.0 { "Generating data visualizations" }
+            else if progress < 95.0 { "Saving final report" }
+            else if progress < 97.0 { "Cleaning temporary files" }
             else { "Almost done..." }
         }
     }.to_string()

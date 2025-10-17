@@ -21,6 +21,9 @@ pub fn init_window_handle() {
 /// Enables mouse locking to the game window
 pub fn enable_mouse_lock() {
     MOUSE_LOCK_ACTIVE.store(true, Ordering::Relaxed);
+    // Capture the window handle immediately when enabling
+    // This allows toggling to work in real-time without plugin reload
+    init_window_handle();
     log::info!("Mouse lock enabled");
 }
 

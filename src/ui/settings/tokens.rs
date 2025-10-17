@@ -1,6 +1,8 @@
 use nexus::imgui::{ChildWindow, Ui};
 
 use crate::settings::{SavedToken, Settings};
+use crate::state::STATE;
+use crate::tokens::validate_token;
 
 /// Renders the token manager tab
 pub fn render_tokens_tab(ui: &Ui, config_path: &std::path::Path) {
@@ -10,11 +12,25 @@ pub fn render_tokens_tab(ui: &Ui, config_path: &std::path::Path) {
         static TOKEN_TO_DELETE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     }
 
+    // Show applied message at the top if active
+    let applied_message_until = *STATE.token_applied_message_until.lock().unwrap();
+    if let Some(until) = applied_message_until {
+        if std::time::Instant::now() < until {
+            let message = STATE.token_applied_message.lock().unwrap().clone();
+            ui.text_colored([0.0, 1.0, 0.0, 1.0], &message);
+            ui.spacing();
+        } else {
+            // Message expired, clear it
+            *STATE.token_applied_message_until.lock().unwrap() = None;
+        }
+    }
+
     ui.text("Saved Tokens:");
     ui.spacing();
 
     let settings = Settings::get();
     let saved_tokens = settings.saved_tokens.clone();
+    let current_token = settings.history_token.clone();
     drop(settings);
 
     if saved_tokens.is_empty() {
@@ -40,13 +56,35 @@ pub fn render_tokens_tab(ui: &Ui, config_path: &std::path::Path) {
 
                     ui.same_line();
 
-                    if ui.small_button(&format!("Use##use_{}", index)) {
-                        let mut settings = Settings::get();
-                        settings.history_token = saved_token.token.clone();
-                        if let Err(e) = settings.store(config_path) {
-                            log::error!("Failed to save settings: {}", e);
+                    // Check if this token is currently in use
+                    let is_current = saved_token.token == current_token;
+
+                    if is_current {
+                        // Show "Active" button in green, disabled
+                        let _style = ui.push_style_color(nexus::imgui::StyleColor::Button, [0.0, 0.5, 0.0, 0.8]);
+                        let _style2 = ui.push_style_color(nexus::imgui::StyleColor::ButtonHovered, [0.0, 0.5, 0.0, 0.8]);
+                        let _style3 = ui.push_style_color(nexus::imgui::StyleColor::ButtonActive, [0.0, 0.5, 0.0, 0.8]);
+                        ui.small_button(&format!("Active##use_{}", index));
+                    } else {
+                        // Show regular "Use" button
+                        if ui.small_button(&format!("Use##use_{}", index)) {
+                            let mut settings = Settings::get();
+                            settings.history_token = saved_token.token.clone();
+                            
+                            if let Err(e) = settings.store(config_path) {
+                                log::error!("Failed to save settings: {}", e);
+                            } else {
+                                log::info!("Switched to token: {}", saved_token.name);
+                                
+                                // Set the token in STATE so token_input.rs picks it up
+                                *STATE.generated_token.lock().unwrap() = saved_token.token.clone();
+                                
+                                // Show confirmation message
+                                *STATE.token_applied_message.lock().unwrap() = format!("Key '{}' applied", saved_token.name);
+                                *STATE.token_applied_message_until.lock().unwrap() = 
+                                    Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                            }
                         }
-                        log::info!("Switched to token: {}", saved_token.name);
                     }
 
                     ui.same_line();
@@ -59,7 +97,7 @@ pub fn render_tokens_tab(ui: &Ui, config_path: &std::path::Path) {
                 }
             });
     }
-
+    
     if let Some(index_to_delete) = TOKEN_TO_DELETE.get() {
         let mut settings = Settings::get();
         if index_to_delete < settings.saved_tokens.len() {
@@ -100,29 +138,102 @@ pub fn render_tokens_tab(ui: &Ui, config_path: &std::path::Path) {
 
     ui.spacing();
 
+    // Show validation message if active
+    let validation_until = *STATE.save_token_validation_message_until.lock().unwrap();
+    if let Some(until) = validation_until {
+        if std::time::Instant::now() < until {
+            let message = STATE.save_token_validation_message.lock().unwrap().clone();
+            let is_error = *STATE.save_token_validation_is_error.lock().unwrap();
+
+            let color = if is_error {
+                [1.0, 0.3, 0.0, 1.0] // Red-orange for invalid
+            } else {
+                [0.0, 1.0, 0.0, 1.0] // Green for valid
+            };
+
+            ui.text_colored(color, &message);
+        } else {
+            // Message expired, clear it
+            *STATE.save_token_validation_message_until.lock().unwrap() = None;
+        }
+    }
+
+    ui.spacing();
+
     let can_save = NEW_TOKEN_NAME.with_borrow(|name| !name.trim().is_empty())
         && NEW_TOKEN_VALUE.with_borrow(|token| !token.trim().is_empty());
+    let is_validating = *STATE.save_token_validating.lock().unwrap();
 
-    if can_save {
+    if can_save && !is_validating {
         if ui.button("Save Token") {
-            NEW_TOKEN_NAME.with_borrow(|name| {
-                NEW_TOKEN_VALUE.with_borrow(|token| {
-                    let mut settings = Settings::get();
-                    settings.saved_tokens.push(SavedToken {
-                        name: name.trim().to_string(),
-                        token: token.trim().to_string(),
-                    });
-                    if let Err(e) = settings.store(config_path) {
-                        log::error!("Failed to save token: {}", e);
-                    } else {
-                        log::info!("Saved new token: {}", name.trim());
+            let token_to_validate = NEW_TOKEN_VALUE.with_borrow(|token| token.trim().to_string());
+            let token_name = NEW_TOKEN_NAME.with_borrow(|name| name.trim().to_string());
+            
+            let settings = Settings::get();
+            let api_endpoint = settings.api_endpoint.clone();
+            let config_path = config_path.to_path_buf();
+            drop(settings);
+            
+            // Start validation
+            *STATE.save_token_validating.lock().unwrap() = true;
+            STATE.save_token_validation_message.lock().unwrap().clear();
+            *STATE.save_token_validation_message_until.lock().unwrap() = None;
+            
+            std::thread::spawn(move || {
+                log::info!("Validating token before saving: {}", token_name);
+                
+                match validate_token(&api_endpoint, &token_to_validate) {
+                    Ok(true) => {
+                        log::info!("Token validation successful, saving token: {}", token_name);
+                        
+                        // Token is valid, save it
+                        let mut settings = Settings::get();
+                        settings.saved_tokens.push(SavedToken {
+                            name: token_name.clone(),
+                            token: token_to_validate,
+                        });
+                        
+                        if let Err(e) = settings.store(&config_path) {
+                            log::error!("Failed to save token: {}", e);
+                            *STATE.save_token_validation_message.lock().unwrap() = format!("Failed to save: {}", e);
+                            *STATE.save_token_validation_is_error.lock().unwrap() = true;
+                        } else {
+                            log::info!("Saved new token: {}", token_name);
+                            *STATE.save_token_validation_message.lock().unwrap() = format!("Token '{}' saved successfully!", token_name);
+                            *STATE.save_token_validation_is_error.lock().unwrap() = false;
+                            
+                            // Clear the input fields
+                            NEW_TOKEN_NAME.set(String::new());
+                            NEW_TOKEN_VALUE.set(String::new());
+                        }
+                        
+                        *STATE.save_token_validation_message_until.lock().unwrap() = Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                        *STATE.save_token_validating.lock().unwrap() = false;
                     }
-                });
+                    Ok(false) => {
+                        log::warn!("Token validation failed - invalid token");
+                        *STATE.save_token_validation_message.lock().unwrap() = "Invalid token! Cannot save.".to_string();
+                        *STATE.save_token_validation_is_error.lock().unwrap() = true;
+                        *STATE.save_token_validation_message_until.lock().unwrap() = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                        *STATE.save_token_validating.lock().unwrap() = false;
+                    }
+                    Err(e) => {
+                        log::error!("Token validation error: {}", e);
+                        *STATE.save_token_validation_message.lock().unwrap() = format!("Validation error: {}", e);
+                        *STATE.save_token_validation_is_error.lock().unwrap() = true;
+                        *STATE.save_token_validation_message_until.lock().unwrap() = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                        *STATE.save_token_validating.lock().unwrap() = false;
+                    }
+                }
             });
-
-            NEW_TOKEN_NAME.set(String::new());
-            NEW_TOKEN_VALUE.set(String::new());
         }
+    } else if is_validating {
+        let _style = ui.push_style_color(nexus::imgui::StyleColor::Button, [0.3, 0.3, 0.3, 0.5]);
+        let _style2 =
+            ui.push_style_color(nexus::imgui::StyleColor::ButtonHovered, [0.3, 0.3, 0.3, 0.5]);
+        let _style3 =
+            ui.push_style_color(nexus::imgui::StyleColor::ButtonActive, [0.3, 0.3, 0.3, 0.5]);
+        ui.button("Validating...");
     } else {
         let _style = ui.push_style_color(nexus::imgui::StyleColor::Button, [0.3, 0.3, 0.3, 0.5]);
         let _style2 =

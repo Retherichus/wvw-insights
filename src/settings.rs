@@ -12,13 +12,6 @@ pub struct SavedToken {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReportHistoryEntry {
-    pub url: String,
-    pub timestamp: u64, // Unix timestamp
-    pub session_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub history_token: String,
     pub api_endpoint: String,
@@ -28,13 +21,15 @@ pub struct Settings {
     #[serde(default)]
     pub saved_tokens: Vec<SavedToken>,
     #[serde(default)]
-    pub report_history: Vec<ReportHistoryEntry>,
-    #[serde(default)]
     pub auto_cleanup_enabled: bool,
     #[serde(default = "default_cleanup_days")]
     pub auto_cleanup_days: u32,
     #[serde(default)]
     pub mouse_lock_enabled: bool,
+    #[serde(default)]
+    pub guild_name: String,
+    #[serde(default)]
+    pub enable_legacy_parser: bool,
 }
 
 fn default_cleanup_days() -> u32 {
@@ -53,12 +48,14 @@ impl Settings {
             log_directory: String::new(),
             show_formatted_timestamps: true,
             saved_tokens: Vec::new(),
-            report_history: Vec::new(),
             auto_cleanup_enabled: false,
             auto_cleanup_days: 30,
             mouse_lock_enabled: false,
+            guild_name: String::new(),
+            enable_legacy_parser: false,
         }
     }
+
 
     pub fn init(&mut self) {
         self.api_endpoint = "https://parser.rethl.net/api.php".to_string();
@@ -67,6 +64,8 @@ impl Settings {
         self.auto_cleanup_enabled = false;
         self.auto_cleanup_days = 30;
         self.mouse_lock_enabled = false;
+        self.guild_name = String::new();
+        self.enable_legacy_parser = false;
     }
 
     pub fn get() -> MutexGuard<'static, Self> {

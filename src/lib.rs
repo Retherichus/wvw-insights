@@ -25,6 +25,10 @@ mod ui;
 mod upload;
 mod uploaded_logs;
 use uploaded_logs::UploadedLogs;
+mod webhooks;
+use webhooks::WebhookSettings;
+mod report_history;
+use report_history::ReportHistory;
 
 use cleanup::check_auto_cleanup_on_load;
 use common::{WorkerMessage, WorkerType};
@@ -46,6 +50,18 @@ fn uploaded_logs_path() -> PathBuf {
     get_addon_dir("wvw-insights")
         .expect("Addon dir to exist")
         .join("uploaded_logs.json")
+}
+
+fn webhooks_path() -> PathBuf {
+    get_addon_dir("wvw-insights")
+        .expect("Addon dir to exist")
+        .join("webhooks.json")
+}
+
+fn report_history_path() -> PathBuf {
+    get_addon_dir("wvw-insights")
+        .expect("Addon dir to exist")
+        .join("report_history.json")
 }
 
 // Keybind handler to toggle window
@@ -141,7 +157,7 @@ fn check_upload_progress() {
                 let session_id = STATE.session_id.lock().unwrap().clone();
 
                 match upload::check_status(&api_endpoint, &session_id) {
-                    Ok((status, report_url, progress, phase)) => {
+                    Ok((status, report_urls, progress, phase)) => {
                         // Update progress and phase
                         *STATE.processing_progress.lock().unwrap() = progress;
                         if let Some(phase_msg) = phase {
@@ -149,24 +165,27 @@ fn check_upload_progress() {
                         }
                         if status == "complete" {
                             log::info!("Processing complete!");
-                            if let Some(url) = report_url {
-                                *STATE.report_url.lock().unwrap() = url.clone();
+                            if let Some(urls) = report_urls {
+                                *STATE.report_urls.lock().unwrap() = urls.clone();
 
-                                // Save to report history
+                                // Save to new report history system
                                 let session_id = STATE.session_id.lock().unwrap().clone();
-                                let mut settings = Settings::get();
-                                settings
-                                    .report_history
-                                    .push(settings::ReportHistoryEntry {
-                                        url: url.clone(),
-                                        timestamp: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_secs(),
-                                        session_id,
-                                    });
-                                if let Err(e) = settings.store(config_path()) {
-                                    log::error!("Failed to save report to history: {}", e);
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs();
+
+                                let mut history = ReportHistory::get();
+                                
+                                // First URL is always the main report
+                                let main_url = urls[0].clone();
+                                // Second URL (if exists) is the legacy report
+                                let legacy_url = urls.get(1).cloned();
+                                
+                                history.add_report(session_id, timestamp, main_url, legacy_url);
+                                
+                                if let Err(e) = history.store(report_history_path()) {
+                                    log::error!("Failed to save report history: {}", e);
                                 } else {
                                     log::info!("Saved report to history");
                                 }
@@ -236,7 +255,7 @@ fn render_fn(ui: &Ui) {
             ui::render_results(ui);
         }
     }
-
+    
     // Update window visibility if user closed it
     if !is_open {
         *STATE.show_main_window.lock().unwrap() = false;
@@ -270,6 +289,29 @@ fn load() {
         log::warn!("Failed to load uploaded logs history: {e}");
     }
 
+    // Load webhook settings at startup
+    let webhooks_path = webhooks_path();
+    if let Err(e) = WebhookSettings::from_path(&webhooks_path) {
+        log::warn!("Failed to load webhook settings: {e}");
+        // Only initialize and save if the file doesn't exist
+        if !webhooks_path.exists() {
+            log::info!("Webhook settings file doesn't exist, creating new one");
+            let mut webhook_settings = WebhookSettings::get();
+            webhook_settings.init();
+            if let Err(e) = webhook_settings.store(&webhooks_path) {
+                log::error!("Failed to save initialized webhook settings: {e}");
+            }
+        } else {
+            log::error!("Webhook settings file exists but failed to parse - keeping in-memory defaults");
+        }
+    }
+
+    // Load report history at startup
+    let history_path = report_history_path();
+    if let Err(e) = ReportHistory::from_path(&history_path) {
+        log::warn!("Failed to load report history: {e}");
+    }
+
     check_auto_cleanup_on_load();
     
     // Enable mouse lock if it was enabled last time
@@ -278,7 +320,7 @@ fn load() {
         qol::enable_mouse_lock();
     }
     drop(settings);
-
+    
     let producer_tx = STATE.init_producer();
     let upload_rx = STATE.init_upload_worker();
 

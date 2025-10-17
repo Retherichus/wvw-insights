@@ -9,6 +9,7 @@ thread_local! {
     static LOG_DIR_BUFFER: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
     static API_ENDPOINT_BUFFER: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
     static SHOW_FORMATTED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    static ENABLE_LEGACY_PARSER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static INITIALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -19,6 +20,7 @@ pub fn render_general_tab(ui: &Ui, _config_path: &std::path::Path) {
         LOG_DIR_BUFFER.set(settings.log_directory.clone());
         API_ENDPOINT_BUFFER.set(settings.api_endpoint.clone());
         SHOW_FORMATTED.set(settings.show_formatted_timestamps);
+        ENABLE_LEGACY_PARSER.set(settings.enable_legacy_parser);
         INITIALIZED.set(true);
     }
 
@@ -34,7 +36,7 @@ pub fn render_general_tab(ui: &Ui, _config_path: &std::path::Path) {
                     Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
             }
             Err(e) => {
-                *STATE.sync_arcdps_message.lock().unwrap() = format!("⚠ {}", e);
+                *STATE.sync_arcdps_message.lock().unwrap() = format!("Warning: {}", e);
                 *STATE.sync_arcdps_message_is_error.lock().unwrap() = true;
                 *STATE.sync_arcdps_message_until.lock().unwrap() =
                     Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
@@ -131,8 +133,35 @@ pub fn render_general_tab(ui: &Ui, _config_path: &std::path::Path) {
     }
 
     ui.text_colored(
-        [0.7, 0.7, 0.7, 1.0],
+        [0.9, 0.9, 0.9, 1.0],
         "Leave as default unless instructed otherwise",
+    );
+
+    ui.spacing();
+    ui.separator();
+    ui.spacing();
+
+    // Legacy Parser option - with strong warning
+    ui.text_colored([1.0, 0.4, 0.0, 1.0], "Advanced Options:");
+    ui.spacing();
+    
+    let mut enable_legacy = ENABLE_LEGACY_PARSER.get();
+    if ui.checkbox("Enable Legacy Parser", &mut enable_legacy) {
+        ENABLE_LEGACY_PARSER.set(enable_legacy);
+    }
+    
+    ui.text_colored([1.0, 0.3, 0.0, 1.0], "WARNING - NOT RECOMMENDED");
+    ui.text_colored(
+        [0.9, 0.9, 0.9, 1.0],
+        "Legacy reports are outdated and double processing time.",
+    );
+    ui.text_colored(
+        [0.9, 0.9, 0.9, 1.0],
+        "The default Log Combiner is sufficient for all use cases.",
+    );
+    ui.text_colored(
+        [0.9, 0.9, 0.9, 1.0],
+        "Enable only if you absolutely can’t live without it. :(",
     );
 }
 
@@ -144,11 +173,17 @@ pub fn save_general_settings(config_path: &std::path::Path) {
             settings.log_directory = dir.clone();
             settings.api_endpoint = endpoint.clone();
             settings.show_formatted_timestamps = SHOW_FORMATTED.get();
+            settings.enable_legacy_parser = ENABLE_LEGACY_PARSER.get();
 
             if let Err(e) = settings.store(config_path) {
                 log::error!("Failed to save settings: {}", e);
             } else {
-                log::info!("Settings saved - log_directory: '{}', api_endpoint: '{}'", dir, endpoint);
+                log::info!(
+                    "Settings saved - log_directory: '{}', api_endpoint: '{}', legacy_parser: {}",
+                    dir,
+                    endpoint,
+                    settings.enable_legacy_parser
+                );
             }
         });
     });

@@ -78,17 +78,21 @@ pub fn render_upload_progress(ui: &Ui) {
                         let settings = Settings::get();
                         let api_endpoint = settings.api_endpoint.clone();
                         let history_token = settings.history_token.clone();
+                        let guild_name = settings.guild_name.clone();
+                        let enable_legacy_parser = settings.enable_legacy_parser;
                         drop(settings);
 
                         let session_id = STATE.session_id.lock().unwrap().clone();
                         let ownership_token = STATE.ownership_token.lock().unwrap().clone();
 
-                        log::info!("Starting processing");
+                        log::info!("Starting processing with guild name: '{}', legacy parser: {}", guild_name, enable_legacy_parser);
                         match crate::upload::start_processing(
                             &api_endpoint,
                             &session_id,
                             &history_token,
                             &ownership_token,
+                            &guild_name,
+                            enable_legacy_parser,
                         ) {
                             Ok(server_message) => {
                                 log::info!("Processing started successfully: {}", server_message);
@@ -98,7 +102,8 @@ pub fn render_upload_progress(ui: &Ui) {
                             Err(e) => {
                                 log::error!("Failed to start processing: {}", e);
                                 *STATE.processing_state.lock().unwrap() = ProcessingState::Failed;
-                                *STATE.report_url.lock().unwrap() = format!("Server error: {}", e);
+                                // Store error message in the first position of report_urls vector
+                                *STATE.report_urls.lock().unwrap() = vec![format!("Server error: {}", e)];
                             }
                         }
                     });
@@ -201,12 +206,43 @@ pub fn render_upload_progress(ui: &Ui) {
                     }
                 });
         }
+        // In the ProcessingState::Complete section of upload_progress.rs:
         ProcessingState::Complete => {
             ui.text_colored([0.0, 1.0, 0.0, 1.0], "Processing complete!");
+            
+            // Show all report URLs
+            let report_urls = STATE.report_urls.lock().unwrap();
+            if !report_urls.is_empty() {
+                ui.spacing();
+                ui.text("Report URLs:");
+                
+                for url in report_urls.iter() {
+                    let label = if url.contains("Legacy") || url.to_lowercase().contains("legacy") {
+                        "Legacy Report:"
+                    } else {
+                        "Report:"
+                    };
+                    ui.text_colored([0.0, 1.0, 1.0, 1.0], &format!("{} {}", label, url));
+                }
+            } else {
+                ui.spacing();
+                ui.text_colored([1.0, 1.0, 0.0, 1.0], "No report URLs available");
+            }
+
+            ui.spacing();
+            if ui.button("Back to Log Selection") {
+                std::thread::spawn(|| {
+                    log::info!("Back to Log Selection clicked - spawning reset");
+                    reset_upload_state();
+                    log::info!("Reset complete");
+                });
+            }
         }
         ProcessingState::Failed => {
-            let error_message = STATE.report_url.lock().unwrap().clone();
-            drop(STATE.report_url.lock());
+            // Get error message from report_urls (it's stored there as a single-element vector)
+            let report_urls = STATE.report_urls.lock().unwrap();
+            let error_message = report_urls.first().cloned().unwrap_or_default();
+            drop(report_urls);
 
             ui.text_colored([1.0, 0.0, 0.0, 1.0], "Processing failed!");
             ui.spacing();
@@ -219,23 +255,27 @@ pub fn render_upload_progress(ui: &Ui) {
 
             if ui.button("Retry Processing") {
                 *STATE.processing_state.lock().unwrap() = ProcessingState::Processing;
-                STATE.report_url.lock().unwrap().clear();
+                STATE.report_urls.lock().unwrap().clear();
 
                 std::thread::spawn(|| {
                     let settings = Settings::get();
                     let api_endpoint = settings.api_endpoint.clone();
                     let history_token = settings.history_token.clone();
+                    let guild_name = settings.guild_name.clone();
+                    let enable_legacy_parser = settings.enable_legacy_parser;
                     drop(settings);
 
                     let session_id = STATE.session_id.lock().unwrap().clone();
                     let ownership_token = STATE.ownership_token.lock().unwrap().clone();
 
-                    log::info!("Retrying processing");
+                    log::info!("Retrying processing with guild name: '{}', legacy parser: {}", guild_name, enable_legacy_parser);
                     match crate::upload::start_processing(
                         &api_endpoint,
                         &session_id,
                         &history_token,
                         &ownership_token,
+                        &guild_name,
+                        enable_legacy_parser,
                     ) {
                         Ok(server_message) => {
                             log::info!("Processing started successfully: {}", server_message);
@@ -245,7 +285,8 @@ pub fn render_upload_progress(ui: &Ui) {
                         Err(e) => {
                             log::error!("Failed to start processing: {}", e);
                             *STATE.processing_state.lock().unwrap() = ProcessingState::Failed;
-                            *STATE.report_url.lock().unwrap() = format!("Server error: {}", e);
+                            // Store error message in the first position of report_urls vector
+                            *STATE.report_urls.lock().unwrap() = vec![format!("Server error: {}", e)];
                         }
                     }
                 });
@@ -277,8 +318,8 @@ pub fn reset_upload_state() {
     log::info!("reset_upload_state: Resetting processing_state");
     *STATE.processing_state.lock().unwrap() = ProcessingState::Idle;
 
-    log::info!("reset_upload_state: Clearing report_url");
-    STATE.report_url.lock().unwrap().clear();
+    log::info!("reset_upload_state: Clearing report_urls");
+    STATE.report_urls.lock().unwrap().clear();
 
     log::info!("reset_upload_state: Clearing session_id");
     STATE.session_id.lock().unwrap().clear();

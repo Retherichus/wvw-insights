@@ -1,10 +1,11 @@
 use nexus::imgui::{ChildWindow, Ui};
 
 use crate::formatting::format_report_timestamp;
+use crate::report_history::ReportHistory;
 use crate::settings::Settings;
 
 /// Renders the report history tab
-pub fn render_history_tab(ui: &Ui, config_path: &std::path::Path) {
+pub fn render_history_tab(ui: &Ui, _config_path: &std::path::Path) {
     thread_local! {
         static REPORT_TO_DELETE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     }
@@ -14,13 +15,16 @@ pub fn render_history_tab(ui: &Ui, config_path: &std::path::Path) {
 
     let settings = Settings::get();
     let current_token = settings.history_token.clone();
-    let mut report_history = settings.report_history.clone();
     drop(settings);
 
-    // Sort by timestamp (newest first)
-    report_history.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    let history = ReportHistory::get();
+    let mut reports = history.reports.clone();
+    drop(history);
 
-    if report_history.is_empty() {
+    // Sort by timestamp (newest first)
+    reports.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    if reports.is_empty() {
         ui.text_colored([0.7, 0.7, 0.7, 1.0], "No reports yet");
         ui.spacing();
         ui.text_colored(
@@ -30,7 +34,7 @@ pub fn render_history_tab(ui: &Ui, config_path: &std::path::Path) {
     } else {
         ui.text_colored(
             [0.7, 0.7, 0.7, 1.0],
-            &format!("Total reports: {}", report_history.len()),
+            &format!("Total sessions: {}", reports.len()),
         );
         ui.spacing();
 
@@ -48,10 +52,10 @@ pub fn render_history_tab(ui: &Ui, config_path: &std::path::Path) {
 
                 if ui.button("Yes, Clear All") {
                     ui.close_current_popup();
-                    let mut settings = Settings::get();
-                    settings.report_history.clear();
-                    if let Err(e) = settings.store(config_path) {
-                        log::error!("Failed to save settings: {}", e);
+                    let mut history = ReportHistory::get();
+                    history.clear();
+                    if let Err(e) = history.store(crate::report_history_path()) {
+                        log::error!("Failed to save history: {}", e);
                     }
                     log::info!("Cleared all report history");
                 }
@@ -70,7 +74,7 @@ pub fn render_history_tab(ui: &Ui, config_path: &std::path::Path) {
         ChildWindow::new("ReportHistoryList")
             .size([0.0, 350.0])
             .build(ui, || {
-                for (index, entry) in report_history.iter().enumerate() {
+                for (index, entry) in reports.iter().enumerate() {
                     let timestamp_str = format_report_timestamp(entry.timestamp);
 
                     ui.text_colored([0.8, 0.8, 1.0, 1.0], &timestamp_str);
@@ -78,23 +82,46 @@ pub fn render_history_tab(ui: &Ui, config_path: &std::path::Path) {
                         [0.6, 0.6, 0.6, 1.0],
                         &format!("Session: {}", entry.session_id),
                     );
+                    ui.spacing();
 
-                    if ui.small_button(&format!("Copy URL##copy_{}", index)) {
-                        ui.set_clipboard_text(&entry.url);
-                        log::info!("Copied URL to clipboard");
+                    // Main Report section
+                    ui.text_colored([0.9, 0.9, 1.0, 1.0], "Main Report:");
+                    ui.same_line();
+
+                    if ui.small_button(&format!("Copy URL##copy_main_{}", index)) {
+                        ui.set_clipboard_text(&entry.main_report_url);
+                        log::info!("Copied main report URL to clipboard");
                     }
 
                     ui.same_line();
 
-                    if ui.small_button(&format!("Open in Browser##open_{}", index)) {
-                        if let Err(e) = open::that_detached(&entry.url) {
+                    if ui.small_button(&format!("Open##open_main_{}", index)) {
+                        if let Err(e) = open::that_detached(&entry.main_report_url) {
                             log::error!("Failed to open browser: {}", e);
                         }
                     }
 
-                    ui.same_line();
+                    // Legacy Report section (if it exists)
+                    if let Some(ref legacy_url) = entry.legacy_report_url {
+                        ui.text_colored([0.8, 0.8, 0.6, 1.0], "Legacy Report:");
+                        ui.same_line();
 
-                    if ui.small_button(&format!("Delete##del_{}", index)) {
+                        if ui.small_button(&format!("Copy URL##copy_legacy_{}", index)) {
+                            ui.set_clipboard_text(legacy_url);
+                            log::info!("Copied legacy report URL to clipboard");
+                        }
+
+                        ui.same_line();
+
+                        if ui.small_button(&format!("Open##open_legacy_{}", index)) {
+                            if let Err(e) = open::that_detached(legacy_url) {
+                                log::error!("Failed to open browser: {}", e);
+                            }
+                        }
+                    }
+
+                    // Delete button for the entire session
+                    if ui.small_button(&format!("Delete Session##del_{}", index)) {
                         REPORT_TO_DELETE.set(Some(index));
                     }
 
@@ -107,18 +134,14 @@ pub fn render_history_tab(ui: &Ui, config_path: &std::path::Path) {
 
     // Handle deletion
     if let Some(index_to_delete) = REPORT_TO_DELETE.get() {
-        let mut settings = Settings::get();
+        let mut history = ReportHistory::get();
         // Sort the same way to match indices
-        settings
-            .report_history
-            .sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        if index_to_delete < settings.report_history.len() {
-            settings.report_history.remove(index_to_delete);
-            if let Err(e) = settings.store(config_path) {
-                log::error!("Failed to save settings after deletion: {}", e);
-            } else {
-                log::info!("Deleted report from history");
-            }
+        history.reports.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        history.remove_report(index_to_delete);
+        if let Err(e) = history.store(crate::report_history_path()) {
+            log::error!("Failed to save history after deletion: {}", e);
+        } else {
+            log::info!("Deleted report session from history");
         }
         REPORT_TO_DELETE.set(None);
     }

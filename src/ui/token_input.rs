@@ -5,30 +5,36 @@ use crate::settings::Settings;
 use crate::state::STATE;
 use crate::tokens::{generate_token, validate_token};
 
+// Move thread_local to module level so reset_initialization can access it
+thread_local! {
+    static TOKEN_BUFFER: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    static GUILD_NAME_BUFFER: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    static INITIALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Renders the token input screen
 pub fn render_token_input(ui: &Ui, config_path: &std::path::Path) {
-    thread_local! {
-        static TOKEN_BUFFER: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
-        static INITIALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-        static LAST_LOADED_TOKEN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
-    }
-
-    // Check if we need to reload from settings (e.g., token was changed in settings)
-    let current_settings_token = Settings::get().history_token.clone();
-    let should_reload = LAST_LOADED_TOKEN.with_borrow(|last| last != &current_settings_token);
-    
-    if !INITIALIZED.get() || should_reload {
-        TOKEN_BUFFER.set(current_settings_token.clone());
-        LAST_LOADED_TOKEN.set(current_settings_token);
+    // Simple initialization - just once
+    if !INITIALIZED.get() {
+        let settings = Settings::get();
+        TOKEN_BUFFER.set(settings.history_token.clone());
+        GUILD_NAME_BUFFER.set(settings.guild_name.clone());
         INITIALIZED.set(true);
     }
 
-    // Check if we have a newly generated token to insert
+    // Check if we have a newly generated token to insert (from Generate Key or Use button)
     let generated_token = STATE.generated_token.lock().unwrap();
     if !generated_token.is_empty() {
         TOKEN_BUFFER.set(generated_token.clone());
         drop(generated_token);
         STATE.generated_token.lock().unwrap().clear();
+        
+        // Also save it to settings immediately
+        let mut settings = Settings::get();
+        settings.history_token = TOKEN_BUFFER.with_borrow(|token| token.clone());
+        if let Err(e) = settings.store(config_path) {
+            log::error!("Failed to save token from state: {}", e);
+        }
     } else {
         drop(generated_token);
     }
@@ -36,9 +42,52 @@ pub fn render_token_input(ui: &Ui, config_path: &std::path::Path) {
     ui.text("Enter your History Token");
     ui.spacing();
 
+    let mut token_changed = false;
     TOKEN_BUFFER.with_borrow_mut(|token| {
-        ui.input_text("##token", token).build();
+        if ui.input_text("##token", token).build() {
+            token_changed = true;
+        }
     });
+
+    // Save token in real-time when it changes
+    if token_changed {
+        TOKEN_BUFFER.with_borrow(|token| {
+            let mut settings = Settings::get();
+            settings.history_token = token.clone();
+            if let Err(e) = settings.store(config_path) {
+                log::error!("Failed to save token in real-time: {}", e);
+            } else {
+                log::debug!("Token saved in real-time: {}", token);
+            }
+        });
+    }
+
+    ui.spacing();
+    ui.spacing();
+
+    // Guild Name field (optional)
+    ui.text("Guild Name (optional)");
+    ui.spacing();
+
+    let mut guild_name_changed = false;
+    GUILD_NAME_BUFFER.with_borrow_mut(|guild_name| {
+        if ui.input_text("##guildname", guild_name).build() {
+            guild_name_changed = true;
+        }
+    });
+
+    // Save guild name in real-time when it changes
+    if guild_name_changed {
+        GUILD_NAME_BUFFER.with_borrow(|guild_name| {
+            let mut settings = Settings::get();
+            settings.guild_name = guild_name.clone();
+            if let Err(e) = settings.store(config_path) {
+                log::error!("Failed to save guild name in real-time: {}", e);
+            } else {
+                log::debug!("Guild name saved in real-time: {}", guild_name);
+            }
+        });
+    }
 
     ui.spacing();
 
@@ -59,6 +108,18 @@ pub fn render_token_input(ui: &Ui, config_path: &std::path::Path) {
         } else {
             // Message expired, clear it
             *STATE.token_validation_message_until.lock().unwrap() = None;
+        }
+    }
+    
+    // Show token applied message (from token manager)
+    let applied_message_until = *STATE.token_applied_message_until.lock().unwrap();
+    if let Some(until) = applied_message_until {
+        if std::time::Instant::now() < until {
+            let message = STATE.token_applied_message.lock().unwrap().clone();
+            ui.text_colored([0.0, 1.0, 0.0, 1.0], &message);
+        } else {
+            // Message expired, clear it
+            *STATE.token_applied_message_until.lock().unwrap() = None;
         }
     }
 
@@ -89,8 +150,6 @@ pub fn render_token_input(ui: &Ui, config_path: &std::path::Path) {
             let api_endpoint = settings.api_endpoint.clone();
             drop(settings);
             
-            // Clone config_path for the thread
-            let config_path = config_path.to_path_buf();
             
             // Start validation
             *STATE.token_validating.lock().unwrap() = true;
@@ -104,16 +163,7 @@ pub fn render_token_input(ui: &Ui, config_path: &std::path::Path) {
                     Ok(true) => {
                         log::info!("Token validation successful");
                         
-                        // Save the token
-                        let mut settings = Settings::get();
-                        settings.history_token = token_to_validate.clone();
-                        
-                        if let Err(e) = settings.store(&config_path) {
-                            log::error!("Failed to save config: {}", e);
-                        }
-                        drop(settings);
-                        
-                        // Scan for logs
+                        // Token is already saved in real-time, just scan for logs
                         scan_for_logs();
                         
                         // Switch to log selection
