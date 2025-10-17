@@ -1,5 +1,4 @@
 # WvW Insights
-
 A [Raidcore Nexus](https://github.com/RaidcoreGG/Nexus) addon for Guild Wars 2 that streamlines uploading and analyzing your WvW combat logs.
 
 ## Features
@@ -15,6 +14,13 @@ A [Raidcore Nexus](https://github.com/RaidcoreGG/Nexus) addon for Guild Wars 2 t
 - Recursive subdirectory scanning
 - Automatic refresh in session mode (every 20 seconds)
 - Formatted timestamps for easy log identification
+- Track uploaded logs with visual highlighting
+
+### 🔔 **Discord Integration**
+- Send reports directly to Discord channels via webhooks
+- Save and manage multiple webhooks
+- Customize report names with automatic date insertion
+- Batch send all reports (main + legacy) at once
 
 ### 🧹 **Disk Space Management**
 - **Automatic Cleanup**: Optionally clean old logs once per session on plugin load
@@ -25,20 +31,25 @@ A [Raidcore Nexus](https://github.com/RaidcoreGG/Nexus) addon for Guild Wars 2 t
 ### 🔐 **Token Management**
 - Generate history tokens directly from the addon
 - Save multiple tokens for different accounts
+- Token validation before saving
 - Quick token switching
 - Sync log directory automatically from ArcDPS config
 
 ### 📊 **Report History**
 - Track all your uploaded reports
+- Main and legacy reports grouped by session
 - Quick access to previous parses
 - Copy links or open in browser
 - View all reports for your token on the website
 
 ### ⚙️ **Customization**
 - Configurable API endpoint
+- Guild name customization for reports
+- Optional legacy parser support (not recommended)
 - Toggle between formatted/raw timestamps
 - Keybind support (Default: `Ctrl+Shift+W`)
 - Quick access icon integration
+- Optional mouse lock feature
 
 ## Installation
 
@@ -56,6 +67,7 @@ The addon will auto-update through Nexus.
    - Click the WvW Insights icon or press `Ctrl+Shift+W`
    - Generate or enter your history token
    - Configure your log directory (or sync from ArcDPS)
+   - (Optional) Set your guild name in Settings
 
 2. **Upload Logs**:
    - Open the addon window
@@ -64,7 +76,13 @@ The addon will auto-update through Nexus.
    - Click "Upload Selected"
    - Start processing when uploads complete
 
-3. **Manage Disk Space**:
+3. **Share to Discord**:
+   - After processing completes, click "Send to Discord"
+   - Select a saved webhook or enter a new one
+   - Customize the report name
+   - Send to your Discord channel
+
+4. **Manage Disk Space**:
    - Go to Settings → Cleanup tab
    - Enable automatic cleanup or run manual cleanup
    - Set your preferred age threshold for old logs
@@ -74,11 +92,12 @@ The addon will auto-update through Nexus.
 Settings are stored in: `Guild Wars 2/addons/wvw-insights/settings.json`
 
 ### Settings Options
-- **Log Directory**: Path to your ArcDPS combat logs
-- **API Endpoint**: Parser API URL (default: https://parser.rethl.net/api.php)
-- **Display Options**: Toggle formatted timestamps
-- **Token Manager**: Save and switch between multiple tokens
+- **General**: Log directory, API endpoint, display options, guild name, legacy parser
+- **Token Manager**: Save and switch between multiple tokens with validation
+- **Webhooks**: Manage Discord webhooks for easy report sharing
 - **Cleanup**: Configure automatic/manual cleanup settings
+- **History**: View and manage your report history
+- **QoL**: Optional mouse lock feature
 
 ## Development
 
