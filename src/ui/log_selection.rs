@@ -163,13 +163,8 @@ pub fn render_log_selection(ui: &Ui) {
             drop(uploaded);
         }
         ui.same_line();
-        if ui.button("Deselect All") {
-            for log in logs.iter_mut() {
-                log.selected = false;
-            }
-        }
     } else {
-        // Show disabled buttons with tooltip for other filters
+        // Show disabled Select All button with tooltip for other filters
         let _style = ui.push_style_color(nexus::imgui::StyleColor::Button, [0.3, 0.3, 0.3, 0.5]);
         let _style2 =
             ui.push_style_color(nexus::imgui::StyleColor::ButtonHovered, [0.3, 0.3, 0.3, 0.5]);
@@ -180,15 +175,110 @@ pub fn render_log_selection(ui: &Ui) {
             ui.tooltip_text("Only available for 'This session' and 'Last 24 hours' filters");
         }
         ui.same_line();
-        ui.button("Deselect All");
+    }
+
+    // Deselect All always works
+    if ui.button("Deselect All") {
+        for log in logs.iter_mut() {
+            log.selected = false;
+        }
     }
 
     ui.spacing();
 
-    // Log list display
+    use nexus::imgui::MouseButton;
     ChildWindow::new("LogList")
         .size([0.0, 300.0])
+        .movable(false)
         .build(ui, || {
+            let draw_list = ui.get_window_draw_list();
+            let item_height = ui.text_line_height_with_spacing();
+
+            // --- DRAG SELECTION STATE ---
+            static mut START_POS: Option<[f32; 2]> = None;
+            static mut IS_DRAGGING: bool = false;
+            static mut IS_DESELECT_DRAG: bool = false;
+            static mut DRAG_STARTED: bool = false; // NEW: Track if we've actually started dragging
+            
+            // Drag threshold in pixels - adjust this value to tune sensitivity
+            const DRAG_THRESHOLD: f32 = 5.0;
+
+            let mouse_pos = ui.io().mouse_pos;
+            let left_clicked = ui.is_mouse_clicked(MouseButton::Left);
+            let left_released = ui.is_mouse_released(MouseButton::Left);
+            let right_clicked = ui.is_mouse_clicked(MouseButton::Right);
+            let right_released = ui.is_mouse_released(MouseButton::Right);
+            let left_down = ui.is_mouse_down(MouseButton::Left);
+            let right_down = ui.is_mouse_down(MouseButton::Right);
+
+            unsafe {
+                // Start potential drag when user clicks inside this child
+                if left_clicked && ui.is_window_hovered() {
+                    START_POS = Some(mouse_pos);
+                    IS_DRAGGING = false; // Don't mark as dragging yet
+                    DRAG_STARTED = false;
+                    IS_DESELECT_DRAG = false;
+                }
+
+                // Start potential deselect drag on right click
+                if right_clicked && ui.is_window_hovered() {
+                    START_POS = Some(mouse_pos);
+                    IS_DRAGGING = false; // Don't mark as dragging yet
+                    DRAG_STARTED = false;
+                    IS_DESELECT_DRAG = true;
+                }
+
+                // Check if we've moved enough to start actual dragging
+                if let Some(start) = START_POS {
+                    if !DRAG_STARTED && (left_down || right_down) {
+                        let dx = mouse_pos[0] - start[0];
+                        let dy = mouse_pos[1] - start[1];
+                        let distance = (dx * dx + dy * dy).sqrt();
+                        
+                        // Only start dragging if we've moved beyond the threshold
+                        if distance > DRAG_THRESHOLD {
+                            IS_DRAGGING = true;
+                            DRAG_STARTED = true;
+                        }
+                    }
+                }
+
+                // Stop drag when mouse released
+                if left_released || right_released {
+                    IS_DRAGGING = false;
+                    IS_DESELECT_DRAG = false;
+                    DRAG_STARTED = false;
+                    START_POS = None;
+                }
+
+                // --- DRAW SELECTION BOX & CHECK INTERSECTIONS ---
+                if IS_DRAGGING && DRAG_STARTED {
+                    if let Some(start) = START_POS {
+                        let rect_min = [start[0].min(mouse_pos[0]), start[1].min(mouse_pos[1])];
+                        let rect_max = [start[0].max(mouse_pos[0]), start[1].max(mouse_pos[1])];
+
+                        // Different colors for select vs deselect
+                        let (fill_color, border_color) = if IS_DESELECT_DRAG {
+                            ([1.0, 0.2, 0.2, 0.2], [1.0, 0.2, 0.2, 0.6]) // Red for deselect
+                        } else {
+                            ([0.2, 0.5, 1.0, 0.2], [0.2, 0.5, 1.0, 0.6]) // Blue for select
+                        };
+
+                        // Draw translucent filled selection box
+                        draw_list
+                            .add_rect(rect_min, rect_max, fill_color)
+                            .filled(true)
+                            .build();
+
+                        // Outline
+                        draw_list
+                            .add_rect(rect_min, rect_max, border_color)
+                            .build();
+                    }
+                }
+            }
+
+            // --- NORMAL LOG RENDERING ---
             let settings = Settings::get();
             let use_formatted = settings.show_formatted_timestamps;
             drop(settings);
@@ -198,32 +288,55 @@ pub fn render_log_selection(ui: &Ui) {
 
             for log in logs.iter_mut() {
                 let is_uploaded = uploaded.is_uploaded(&log.filename);
-                
-                // Skip this log if it's uploaded and we're hiding uploaded logs
                 if is_uploaded && !show_uploaded {
                     continue;
                 }
 
-                // Draw green background for previously uploaded logs
+                // Get the screen position BEFORE rendering the item
+                let item_screen_pos = ui.cursor_screen_pos();
+                let content_width = ui.content_region_avail()[0];
+
+                // Background highlight for uploaded logs
                 if is_uploaded {
-                    let draw_list = ui.get_window_draw_list();
-                    let pos = ui.cursor_screen_pos();
-                    let size = [ui.content_region_avail()[0], ui.text_line_height_with_spacing()];
                     draw_list
                         .add_rect(
-                            pos,
-                            [pos[0] + size[0], pos[1] + size[1]],
-                            [0.0, 0.3, 0.0, 0.3],
+                            item_screen_pos,
+                            [item_screen_pos[0] + content_width, item_screen_pos[1] + item_height],
+                            [0.0, 0.3, 0.0, 0.3]
                         )
                         .filled(true)
                         .build();
                 }
 
+                // Check if this item intersects with the selection box
+                // ONLY if we've actually started dragging (moved beyond threshold)
+                unsafe {
+                    if IS_DRAGGING && DRAG_STARTED {
+                        if let Some(start) = START_POS {
+                            let rect_min = [start[0].min(mouse_pos[0]), start[1].min(mouse_pos[1])];
+                            let rect_max = [start[0].max(mouse_pos[0]), start[1].max(mouse_pos[1])];
+
+                            let item_min = item_screen_pos;
+                            let item_max = [item_screen_pos[0] + content_width, item_screen_pos[1] + item_height];
+
+                            let overlaps = !(item_max[0] < rect_min[0]
+                                || item_min[0] > rect_max[0]
+                                || item_max[1] < rect_min[1]
+                                || item_min[1] > rect_max[1]);
+
+                            if overlaps {
+                                // Select or deselect based on drag type
+                                log.selected = !IS_DESELECT_DRAG;
+                            }
+                        }
+                    }
+                }
+
+                // Checkbox and text
                 ui.checkbox(&format!("##checkbox_{}", log.filename), &mut log.selected);
                 ui.same_line();
 
                 if use_formatted {
-                    // Show formatted timestamp
                     if let Some(formatted) = format_timestamp(&log.filename) {
                         ui.text(&formatted);
                         ui.same_line();
@@ -232,21 +345,20 @@ pub fn render_log_selection(ui: &Ui) {
                             &format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0),
                         );
                     } else {
-                        // Fallback if parsing fails
                         ui.text(&log.filename);
                         ui.same_line();
                         ui.text(format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0));
                     }
                 } else {
-                    // Show raw filename
                     ui.text(&log.filename);
                     ui.same_line();
                     ui.text(format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0));
                 }
             }
+
             drop(uploaded);
         });
-
+                
     ui.separator();
 
     let uploaded = UploadedLogs::get();

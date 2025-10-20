@@ -121,17 +121,60 @@ impl WebhookSettings {
 
 static WEBHOOK_SETTINGS: Mutex<WebhookSettings> = Mutex::new(WebhookSettings::default());
 
+/// Validates a Discord webhook URL
+fn validate_webhook_url(webhook_url: &str) -> Result<()> {
+    // Check if URL is empty
+    if webhook_url.trim().is_empty() {
+        return Err(anyhow::anyhow!("Webhook URL cannot be empty"));
+    }
+
+    // Check if URL starts with valid Discord webhook prefix
+    if !webhook_url.starts_with("https://discord.com/api/webhooks/") 
+        && !webhook_url.starts_with("https://discordapp.com/api/webhooks/") {
+        return Err(anyhow::anyhow!("Invalid Discord webhook URL format"));
+    }
+
+    // Additional validation: check URL has parts after the prefix
+    let parts: Vec<&str> = webhook_url.split('/').collect();
+    if parts.len() < 7 {
+        // Expected: https / / discord.com / api / webhooks / ID / TOKEN
+        return Err(anyhow::anyhow!("Incomplete Discord webhook URL"));
+    }
+
+    // Check that the webhook ID and token parts are not empty
+    if parts.get(5).map_or(true, |s| s.is_empty()) || parts.get(6).map_or(true, |s| s.is_empty()) {
+        return Err(anyhow::anyhow!("Discord webhook URL is missing ID or token"));
+    }
+
+    Ok(())
+}
+
 /// Send a message to a Discord webhook
 pub fn send_to_discord(webhook_url: &str, message_content: &str) -> Result<()> {
+    // Validate the webhook URL first
+    validate_webhook_url(webhook_url)?;
+
+    // Validate message content
+    if message_content.trim().is_empty() {
+        return Err(anyhow::anyhow!("Message content cannot be empty"));
+    }
+
     let payload = serde_json::json!({
         "content": message_content,
         "username": "WvW Insights Parser",
         "avatar_url": "https://parser.rethl.net/Assets/Avatar.png"
     });
 
-    let response = ureq::post(webhook_url)
+    // Send the HTTP request with proper error handling
+    let response = match ureq::post(webhook_url)
         .set("Content-Type", "application/json")
-        .send_json(&payload)?;
+        .send_json(&payload) {
+        Ok(resp) => resp,
+        Err(e) => {
+            log::error!("Failed to send webhook request: {}", e);
+            return Err(anyhow::anyhow!("Failed to send webhook request: {}", e));
+        }
+    };
 
     // Discord returns 204 No Content on success
     if response.status() == 204 || response.status() == 200 {

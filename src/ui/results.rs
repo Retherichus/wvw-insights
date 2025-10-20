@@ -124,6 +124,7 @@ pub fn render_results(ui: &Ui) {
     }
 }
 
+
 /// Renders the Discord webhook modal
 fn render_webhook_modal(ui: &Ui) {
     ui.open_popup("Send to Discord");
@@ -131,26 +132,28 @@ fn render_webhook_modal(ui: &Ui) {
     ui.popup_modal("Send to Discord")
         .always_auto_resize(true)
         .build(ui, || {
-            // Show status message if active
-            let status_until = STATE.webhook_status_until.lock().unwrap();
-            if let Some(until) = *status_until {
-                if std::time::Instant::now() < until {
-                    drop(status_until);
-                    let message = STATE.webhook_status_message.lock().unwrap().clone();
-                    let is_error = *STATE.webhook_status_is_error.lock().unwrap();
-                    
-                    let color = if is_error {
-                        [1.0, 0.5, 0.0, 1.0]
-                    } else {
-                        [0.0, 1.0, 0.0, 1.0]
-                    };
-                    
-                    ui.text_colored(color, &message);
-                    ui.spacing();
+            // Show status message if active - check and drop lock before rendering buttons
+            let should_show_status = {
+                let status_until = STATE.webhook_status_until.lock().unwrap();
+                if let Some(until) = *status_until {
+                    std::time::Instant::now() < until
                 } else {
-                    drop(status_until);
-                    *STATE.webhook_status_until.lock().unwrap() = None;
+                    false
                 }
+            };
+            
+            if should_show_status {
+                let message = STATE.webhook_status_message.lock().unwrap().clone();
+                let is_error = *STATE.webhook_status_is_error.lock().unwrap();
+                
+                let color = if is_error {
+                    [1.0, 0.5, 0.0, 1.0]
+                } else {
+                    [0.0, 1.0, 0.0, 1.0]
+                };
+                
+                ui.text_colored(color, &message);
+                ui.spacing();
             }
 
             // Saved webhooks section
@@ -244,13 +247,13 @@ fn render_webhook_modal(ui: &Ui) {
             }
             ui.unindent();
             
-            drop(report_urls); // Drop the lock BEFORE the button
+            drop(report_urls);
             
             ui.spacing();
             ui.separator();
             ui.spacing();
 
-            // Send button - dynamic text based on number of reports
+            // Send button
             let is_sending = *STATE.webhook_sending.lock().unwrap();
             
             if is_sending {
@@ -328,11 +331,7 @@ fn render_webhook_modal(ui: &Ui) {
                                     drop(webhook_settings);
                                     
                                     // Update status on main thread
-                                    *STATE.webhook_status_message.lock().unwrap() = "All reports sent successfully!".to_string();
-                                    *STATE.webhook_status_is_error.lock().unwrap() = false;
-                                    *STATE.webhook_status_until.lock().unwrap() = Some(
-                                        std::time::Instant::now() + std::time::Duration::from_secs(3)
-                                    );
+                                    show_webhook_message("All reports sent successfully!", false);
                                     
                                     // Close modal after a delay
                                     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -340,13 +339,7 @@ fn render_webhook_modal(ui: &Ui) {
                                 }
                                 Err(e) => {
                                     log::error!("Failed to send reports to Discord: {}", e);
-                                    
-                                    // Update status on main thread
-                                    *STATE.webhook_status_message.lock().unwrap() = format!("Failed to send: {}", e);
-                                    *STATE.webhook_status_is_error.lock().unwrap() = true;
-                                    *STATE.webhook_status_until.lock().unwrap() = Some(
-                                        std::time::Instant::now() + std::time::Duration::from_secs(3)
-                                    );
+                                    show_webhook_message(&format!("Failed to send: {}", e), true);
                                 }
                             }
                             
@@ -366,11 +359,25 @@ fn render_webhook_modal(ui: &Ui) {
 }
 
 fn show_webhook_message(message: &str, is_error: bool) {
-    *STATE.webhook_status_message.lock().unwrap() = message.to_string();
-    *STATE.webhook_status_is_error.lock().unwrap() = is_error;
-    *STATE.webhook_status_until.lock().unwrap() = Some(
-        std::time::Instant::now() + std::time::Duration::from_secs(3)
-    );
+    // Create the values we need first
+    let message_string = message.to_string();
+    let until_time = Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+    
+    // Do all locks in sequence, dropping each immediately to prevent deadlock
+    {
+        let mut msg_lock = STATE.webhook_status_message.lock().unwrap();
+        *msg_lock = message_string;
+    }
+    
+    {
+        let mut err_lock = STATE.webhook_status_is_error.lock().unwrap();
+        *err_lock = is_error;
+    }
+    
+    {
+        let mut until_lock = STATE.webhook_status_until.lock().unwrap();
+        *until_lock = until_time;
+    }
 }
 
 /// Marks successfully uploaded logs in the uploaded logs tracker
