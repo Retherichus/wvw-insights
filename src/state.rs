@@ -23,7 +23,6 @@ pub enum TimeFilter {
     Last24Hours,
     Last48Hours,
     Last72Hours,
-    AllLogs,
 }
 
 pub struct State {
@@ -41,6 +40,8 @@ pub struct State {
     pub selected_time_filter: Mutex<TimeFilter>,
     pub last_auto_scan: Mutex<Option<std::time::Instant>>,
     pub last_scan_display: Mutex<String>,
+    pub current_scan_id: Mutex<u64>,
+    pub scan_in_progress: Mutex<bool>,
 
     // ============================================
     // Upload & Processing State
@@ -166,6 +167,8 @@ pub static STATE: State = State {
     selected_time_filter: Mutex::new(TimeFilter::SincePluginStart),
     last_auto_scan: Mutex::new(None),
     last_scan_display: Mutex::new(String::new()),
+    current_scan_id: Mutex::new(0),
+    scan_in_progress: Mutex::new(false), 
 
     // ============================================
     // Upload & Processing State

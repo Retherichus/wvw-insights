@@ -1,6 +1,6 @@
 use nexus::imgui::{ChildWindow, Ui};
 
-use crate::formatting::format_timestamp;
+use crate::formatting::{format_timestamp, format_timestamp_with_map};
 use crate::scanning::scan_for_logs;
 use crate::settings::Settings;
 use crate::state::{ProcessingState, TimeFilter, STATE};
@@ -9,10 +9,11 @@ use crate::uploaded_logs::UploadedLogs;
 /// Renders the log selection screen
 pub fn render_log_selection(ui: &Ui) {
     let logs = STATE.logs.lock().unwrap();
+    let scan_in_progress = *STATE.scan_in_progress.lock().unwrap();
 
-    ui.text(format!("Select logs to upload ({} found)", logs.len()));
+    ui.text(format!("Select WvW logs to upload ({} found)", logs.len()));
 
-    // Time filter selection
+    // Time filter selection (keep existing)
     ui.spacing();
     ui.text("Show logs from:");
     ui.spacing();
@@ -40,13 +41,6 @@ pub fn render_log_selection(ui: &Ui) {
         if ui.radio_button("Last 72 hours", &mut current_filter, TimeFilter::Last72Hours) {
             changed = true;
         }
-
-        // "Show Everything" radio button that triggers warning
-        if ui.radio_button("Show Everything", &mut current_filter, TimeFilter::AllLogs) {
-            // Don't apply change yet, show warning popup first
-            ui.open_popup("load_all_warning");
-        }
-
         changed
     };
 
@@ -78,31 +72,6 @@ pub fn render_log_selection(ui: &Ui) {
     // Drop logs before the popup to avoid borrow issues
     drop(logs);
 
-    // Warning popup for loading all logs
-    ui.popup_modal("load_all_warning").build(ui, || {
-        ui.text_colored([1.0, 0.5, 0.0, 1.0], "⚠️ Performance Warning");
-        ui.spacing();
-        ui.text_wrapped(
-            "Loading all logs may cause performance issues if you have thousands of log files.",
-        );
-        ui.spacing();
-        ui.text_wrapped("This could make the interface slow or unresponsive.");
-        ui.spacing();
-
-        if ui.button("I understand, load all logs anyway") {
-            *STATE.selected_time_filter.lock().unwrap() = TimeFilter::AllLogs;
-            ui.close_current_popup();
-            scan_for_logs();
-            return;
-        }
-
-        ui.same_line();
-
-        if ui.button("Cancel") {
-            ui.close_current_popup();
-        }
-    });
-
     // Apply filter change if any radio button was clicked (except AllLogs which uses popup)
     if filter_changed {
         *STATE.selected_time_filter.lock().unwrap() = current_filter;
@@ -115,11 +84,11 @@ pub fn render_log_selection(ui: &Ui) {
 
     ui.separator();
 
-    // Handle empty log list
-    if logs.is_empty() {
+    // Show scanning indicator or empty message
+    if scan_in_progress && logs.is_empty() {
         ui.text_colored(
-            [1.0, 0.0, 0.0, 1.0],
-            "No logs found with current filter!",
+            [0.7, 0.9, 1.0, 1.0],
+            "Scanning for logs...",
         );
         ui.spacing();
 
@@ -143,7 +112,44 @@ pub fn render_log_selection(ui: &Ui) {
         return;
     }
 
-    // Selection buttons - only show for safe filters
+    // Handle empty log list (only show when NOT scanning)
+    if logs.is_empty() && !scan_in_progress {
+        ui.text_colored(
+            [1.0, 0.0, 0.0, 1.0],
+            "No WvW logs found with current filter!",
+        );
+        ui.spacing();
+
+        if ui.button("Open Settings") {
+            *STATE.show_log_selection.lock().unwrap() = false;
+            *STATE.show_settings.lock().unwrap() = true;
+            return;
+        }
+
+        ui.same_line();
+
+        if ui.button("Back") {
+            std::thread::spawn(|| {
+                log::info!("Back button clicked from log selection");
+                *STATE.show_log_selection.lock().unwrap() = false;
+                *STATE.show_token_input.lock().unwrap() = true;
+            });
+            return;
+        }
+
+        return;
+    }
+
+    // Show scanning indicator above the log list when we have logs
+    if scan_in_progress && !logs.is_empty() {
+        ui.text_colored(
+            [0.7, 0.9, 1.0, 1.0],
+            "Scanning for new logs...",
+        );
+        ui.spacing();
+    }
+
+    // Selection buttons (keep existing)
     let show_select_all = matches!(
         current_filter,
         TimeFilter::SincePluginStart | TimeFilter::Last24Hours
@@ -194,14 +200,24 @@ pub fn render_log_selection(ui: &Ui) {
             let draw_list = ui.get_window_draw_list();
             let item_height = ui.text_line_height_with_spacing();
 
+            // Get the visible bounds of the ChildWindow
+            let window_pos = ui.window_pos();
+            let window_size = ui.window_size();
+            let window_min = window_pos;
+            let window_max = [window_pos[0] + window_size[0], window_pos[1] + window_size[1]];
+
             // --- DRAG SELECTION STATE ---
             static mut START_POS: Option<[f32; 2]> = None;
             static mut IS_DRAGGING: bool = false;
             static mut IS_DESELECT_DRAG: bool = false;
-            static mut DRAG_STARTED: bool = false; // NEW: Track if we've actually started dragging
+            static mut DRAG_STARTED: bool = false;
             
-            // Drag threshold in pixels - adjust this value to tune sensitivity
+            // Drag threshold in pixels
             const DRAG_THRESHOLD: f32 = 5.0;
+            
+            // Auto-scroll settings
+            const SCROLL_ZONE: f32 = 40.0; // Distance from edge to trigger scrolling
+            const SCROLL_SPEED: f32 = 10.0; // Pixels to scroll per frame
 
             let mouse_pos = ui.io().mouse_pos;
             let left_clicked = ui.is_mouse_clicked(MouseButton::Left);
@@ -215,7 +231,7 @@ pub fn render_log_selection(ui: &Ui) {
                 // Start potential drag when user clicks inside this child
                 if left_clicked && ui.is_window_hovered() {
                     START_POS = Some(mouse_pos);
-                    IS_DRAGGING = false; // Don't mark as dragging yet
+                    IS_DRAGGING = false;
                     DRAG_STARTED = false;
                     IS_DESELECT_DRAG = false;
                 }
@@ -223,7 +239,7 @@ pub fn render_log_selection(ui: &Ui) {
                 // Start potential deselect drag on right click
                 if right_clicked && ui.is_window_hovered() {
                     START_POS = Some(mouse_pos);
-                    IS_DRAGGING = false; // Don't mark as dragging yet
+                    IS_DRAGGING = false;
                     DRAG_STARTED = false;
                     IS_DESELECT_DRAG = true;
                 }
@@ -235,11 +251,29 @@ pub fn render_log_selection(ui: &Ui) {
                         let dy = mouse_pos[1] - start[1];
                         let distance = (dx * dx + dy * dy).sqrt();
                         
-                        // Only start dragging if we've moved beyond the threshold
                         if distance > DRAG_THRESHOLD {
                             IS_DRAGGING = true;
                             DRAG_STARTED = true;
                         }
+                    }
+                }
+
+                // --- AUTO-SCROLL LOGIC ---
+                if IS_DRAGGING && DRAG_STARTED {
+                    let scroll_y = ui.scroll_y();
+                    let scroll_max_y = ui.scroll_max_y();
+                    
+                    // Calculate mouse position relative to window
+                    let relative_mouse_y = mouse_pos[1] - window_pos[1];
+                    
+                    // Scroll up if mouse is near top edge
+                    if relative_mouse_y < SCROLL_ZONE && scroll_y > 0.0 {
+                        ui.set_scroll_y((scroll_y - SCROLL_SPEED).max(0.0));
+                    }
+                    
+                    // Scroll down if mouse is near bottom edge
+                    if relative_mouse_y > (window_size[1] - SCROLL_ZONE) && scroll_y < scroll_max_y {
+                        ui.set_scroll_y((scroll_y + SCROLL_SPEED).min(scroll_max_y));
                     }
                 }
 
@@ -254,8 +288,19 @@ pub fn render_log_selection(ui: &Ui) {
                 // --- DRAW SELECTION BOX & CHECK INTERSECTIONS ---
                 if IS_DRAGGING && DRAG_STARTED {
                     if let Some(start) = START_POS {
-                        let rect_min = [start[0].min(mouse_pos[0]), start[1].min(mouse_pos[1])];
-                        let rect_max = [start[0].max(mouse_pos[0]), start[1].max(mouse_pos[1])];
+                        // Calculate unclamped selection rectangle
+                        let raw_rect_min = [start[0].min(mouse_pos[0]), start[1].min(mouse_pos[1])];
+                        let raw_rect_max = [start[0].max(mouse_pos[0]), start[1].max(mouse_pos[1])];
+
+                        // Clamp the selection rectangle to the visible window bounds
+                        let rect_min = [
+                            raw_rect_min[0].max(window_min[0]),
+                            raw_rect_min[1].max(window_min[1])
+                        ];
+                        let rect_max = [
+                            raw_rect_max[0].min(window_max[0]),
+                            raw_rect_max[1].min(window_max[1])
+                        ];
 
                         // Different colors for select vs deselect
                         let (fill_color, border_color) = if IS_DESELECT_DRAG {
@@ -264,13 +309,13 @@ pub fn render_log_selection(ui: &Ui) {
                             ([0.2, 0.5, 1.0, 0.2], [0.2, 0.5, 1.0, 0.6]) // Blue for select
                         };
 
-                        // Draw translucent filled selection box
+                        // Draw translucent filled selection box (clamped)
                         draw_list
                             .add_rect(rect_min, rect_max, fill_color)
                             .filled(true)
                             .build();
 
-                        // Outline
+                        // Outline (clamped)
                         draw_list
                             .add_rect(rect_min, rect_max, border_color)
                             .build();
@@ -309,23 +354,33 @@ pub fn render_log_selection(ui: &Ui) {
                 }
 
                 // Check if this item intersects with the selection box
-                // ONLY if we've actually started dragging (moved beyond threshold)
                 unsafe {
                     if IS_DRAGGING && DRAG_STARTED {
                         if let Some(start) = START_POS {
-                            let rect_min = [start[0].min(mouse_pos[0]), start[1].min(mouse_pos[1])];
-                            let rect_max = [start[0].max(mouse_pos[0]), start[1].max(mouse_pos[1])];
+                            // Calculate unclamped selection rectangle
+                            let raw_rect_min = [start[0].min(mouse_pos[0]), start[1].min(mouse_pos[1])];
+                            let raw_rect_max = [start[0].max(mouse_pos[0]), start[1].max(mouse_pos[1])];
+
+                            // Clamp the selection rectangle to the visible window bounds
+                            let rect_min = [
+                                raw_rect_min[0].max(window_min[0]),
+                                raw_rect_min[1].max(window_min[1])
+                            ];
+                            let rect_max = [
+                                raw_rect_max[0].min(window_max[0]),
+                                raw_rect_max[1].min(window_max[1])
+                            ];
 
                             let item_min = item_screen_pos;
                             let item_max = [item_screen_pos[0] + content_width, item_screen_pos[1] + item_height];
 
+                            // Check overlap with CLAMPED rectangle
                             let overlaps = !(item_max[0] < rect_min[0]
                                 || item_min[0] > rect_max[0]
                                 || item_max[1] < rect_min[1]
                                 || item_min[1] > rect_max[1]);
 
                             if overlaps {
-                                // Select or deselect based on drag type
                                 log.selected = !IS_DESELECT_DRAG;
                             }
                         }
@@ -337,7 +392,8 @@ pub fn render_log_selection(ui: &Ui) {
                 ui.same_line();
 
                 if use_formatted {
-                    if let Some(formatted) = format_timestamp(&log.filename) {
+                    // Use the NEW function that includes map info
+                    if let Some(formatted) = format_timestamp_with_map(&log.filename, &log.map_type) {
                         ui.text(&formatted);
                         ui.same_line();
                         ui.text_colored(
@@ -345,14 +401,37 @@ pub fn render_log_selection(ui: &Ui) {
                             &format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0),
                         );
                     } else {
-                        ui.text(&log.filename);
-                        ui.same_line();
-                        ui.text(format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0));
+                        // Fallback to old formatting if new one fails
+                        if let Some(formatted) = format_timestamp(&log.filename) {
+                            ui.text(&formatted);
+                            ui.same_line();
+                            ui.text_colored(
+                                [0.7, 0.7, 0.7, 1.0],
+                                &format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0),
+                            );
+                        } else {
+                            ui.text(&log.filename);
+                            ui.same_line();
+                            ui.text_colored(
+                                [0.7, 0.7, 0.7, 1.0],
+                                &format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0),
+                            );
+                        }
                     }
                 } else {
-                    ui.text(&log.filename);
+                    // Show filename with map name appended
+                    let map_name = log.map_type.display_name();
+                    let display_text = if map_name != "Unknown" {
+                        format!("{} - {}", log.filename, map_name)
+                    } else {
+                        log.filename.clone()
+                    };
+                    ui.text(&display_text);
                     ui.same_line();
-                    ui.text(format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0));
+                    ui.text_colored(
+                        [0.7, 0.7, 0.7, 1.0],
+                        &format!("({:.2} MB)", log.size as f64 / 1024.0 / 1024.0),
+                    );
                 }
             }
 
@@ -401,7 +480,7 @@ pub fn render_log_selection(ui: &Ui) {
     }
 }
 
-/// Starts the upload process for selected logs
+/// Starts the upload process for selected logs (keep existing)
 fn start_upload_process() {
     log::info!("Starting upload process");
 

@@ -1,6 +1,6 @@
 [package]
 name = "wvw_insights"
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 authors = ["Retherichus"]
 description = "Upload WvW logs for analysis on WvW Insights."
@@ -20,6 +20,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.128"
 ureq = { version = "2.12.1", features = ["json"] }
 ureq_multipart = "1.1.1"
+flate2 = "1.0"
 
 [dependencies.windows]
 version = "0.60.0"
