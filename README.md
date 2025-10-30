@@ -11,7 +11,7 @@ A [Raidcore Nexus](https://github.com/RaidcoreGG/Nexus) addon for Guild Wars 2 t
 - Integration with [WvW Insights Parser](https://parser.rethl.net)
 
 ### 🔍 **Smart Log Management**
-- Multiple time filters (session, 24h, 48h, 72h, all logs)
+- Multiple time filters (session, 24h, 48h, 72h)
 - Recursive subdirectory scanning
 - Automatic refresh in session mode (every 20 seconds)
 - Formatted timestamps for easy log identification
