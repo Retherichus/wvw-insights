@@ -100,8 +100,7 @@ pub fn render_log_selection(ui: &Ui) {
 
         if ui.button("Back") {
             std::thread::spawn(|| {
-                *STATE.show_log_selection.lock().unwrap() = false;
-                *STATE.show_token_input.lock().unwrap() = true;
+                handle_back_navigation();
             });
             return;
         }
@@ -126,8 +125,7 @@ pub fn render_log_selection(ui: &Ui) {
 
         if ui.button("Back") {
             std::thread::spawn(|| {
-                *STATE.show_log_selection.lock().unwrap() = false;
-                *STATE.show_token_input.lock().unwrap() = true;
+                handle_back_navigation();
             });
             return;
         }
@@ -311,6 +309,15 @@ pub fn render_log_selection(ui: &Ui) {
                 if is_uploaded && !show_uploaded {
                     continue;
                 }
+                
+                // NEW: Skip logs already in current session
+                let in_current_session = {
+                    let uploaded_files = STATE.uploaded_files.lock().unwrap();
+                    uploaded_files.iter().any(|f| f.filename == log.filename)
+                };
+                if in_current_session {
+                    continue;
+                }
 
                 // Compact item height - single line with info on same line
                 let line_height = ui.text_line_height_with_spacing();
@@ -471,9 +478,46 @@ pub fn render_log_selection(ui: &Ui) {
     if ui.button("Back") {
         std::thread::spawn(|| {
             log::info!("Back button clicked from log selection");
-            *STATE.show_log_selection.lock().unwrap() = false;
-            *STATE.show_token_input.lock().unwrap() = true;
+            handle_back_navigation();
         });
+    }
+    
+    let session_exists = !STATE.session_id.lock().unwrap().is_empty();
+    let files_in_session = STATE.uploaded_files.lock().unwrap().len();
+
+    if session_exists && files_in_session > 0 {
+        ui.spacing();
+        ui.separator();
+        ui.spacing();
+        
+        ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Active session: {} file(s) ready", files_in_session));
+        
+        if ui.button("Go to Review & Process") {
+            log::info!("Navigating to review screen");
+            *STATE.show_log_selection.lock().unwrap() = false;
+            *STATE.show_upload_review.lock().unwrap() = true;
+        }
+    }    
+}
+
+/// Handles back navigation logic based on session state
+fn handle_back_navigation() {
+    // Check if we have an active session with uploads
+    let has_uploads = !STATE.uploaded_files.lock().unwrap().is_empty();
+    
+    *STATE.show_log_selection.lock().unwrap() = false;
+    
+    if has_uploads {
+        // Go back to review screen (session preserved)
+        log::info!("Returning to upload review (session with {} files preserved)", 
+            STATE.uploaded_files.lock().unwrap().len());
+        *STATE.show_upload_review.lock().unwrap() = true;
+    } else {
+        // No active session or no uploads - clear everything and go to token input
+        log::info!("No uploads in session, clearing session and returning to token input");
+        STATE.session_id.lock().unwrap().clear();
+        STATE.ownership_token.lock().unwrap().clear();
+        *STATE.show_token_input.lock().unwrap() = true;
     }
 }
 
@@ -488,22 +532,30 @@ fn start_upload_process() {
     let history_token = settings.history_token.clone();
     drop(settings);
 
-    // Create session
-    log::info!("Creating session");
-    let (session_id, _ownership_token) =
-        match crate::upload::create_session(&api_endpoint, &history_token) {
-            Ok((sid, ot)) => {
-                log::info!("Session created: {}", sid);
-                *STATE.session_id.lock().unwrap() = sid.clone();
-                *STATE.ownership_token.lock().unwrap() = ot.clone();
-                (sid, ot)
+    // Check if we have an existing session or need to create one
+    let session_id = {
+        let existing_session = STATE.session_id.lock().unwrap().clone();
+        if !existing_session.is_empty() {
+            log::info!("Using existing session: {}", existing_session);
+            existing_session
+        } else {
+            // Create new session
+            log::info!("Creating new session");
+            match crate::upload::create_session(&api_endpoint, &history_token) {
+                Ok((sid, ot)) => {
+                    log::info!("Session created: {}", sid);
+                    *STATE.session_id.lock().unwrap() = sid.clone();
+                    *STATE.ownership_token.lock().unwrap() = ot.clone();
+                    sid
+                }
+                Err(e) => {
+                    log::error!("Failed to create session: {}", e);
+                    *STATE.processing_state.lock().unwrap() = ProcessingState::Failed;
+                    return;
+                }
             }
-            Err(e) => {
-                log::error!("Failed to create session: {}", e);
-                *STATE.processing_state.lock().unwrap() = ProcessingState::Failed;
-                return;
-            }
-        };
+        }
+    };
 
     // Get selected logs
     let selected_logs: Vec<(usize, crate::logfile::LogFile)> = {
@@ -514,6 +566,36 @@ fn start_upload_process() {
             .map(|(i, log)| (i, log.clone()))
             .collect()
     };
+    
+    // APPEND to uploaded_files (don't clear if session already exists)
+    {
+        let mut uploaded_files = STATE.uploaded_files.lock().unwrap();
+        
+        for (_, log) in selected_logs.iter() {
+            use crate::upload_review::{UploadedFileInfo, FileMetadata};
+            use crate::formatting::format_timestamp;
+            
+            // Check if already in list
+            if uploaded_files.iter().any(|f| f.filename == log.filename) {
+                continue;
+            }
+                        
+            uploaded_files.push(UploadedFileInfo {
+                filename: log.filename.clone(),
+                size: format!("{:.2} MB", log.size as f64 / 1024.0 / 1024.0),
+                metadata: Some(FileMetadata {
+                    map_abbr: log.map_type.display_name().to_string(),
+                    map_color: get_map_color(&log.map_type),
+                    recorder: log.recorder.clone(),
+                    commander: log.commander.clone(),
+                    timestamp: format_timestamp(&log.filename),
+                }),
+            });
+        }
+        
+        log::info!("uploaded_files now has {} entries", uploaded_files.len());
+    }
+    
     log::info!("Queueing {} logs for upload", selected_logs.len());
 
     // Queue uploads
@@ -533,4 +615,18 @@ fn start_upload_process() {
         }
     }
     log::info!("All uploads queued");
+}
+
+// Helper function to get map colors
+fn get_map_color(map_type: &crate::logfile::MapType) -> [f32; 4] {
+    use crate::logfile::MapType;
+    match map_type {
+        MapType::EternalBattlegrounds => [0.8, 0.6, 0.2, 1.0],
+        MapType::GreenAlpineBorderlands => [0.2, 0.8, 0.3, 1.0],
+        MapType::BlueAlpineBorderlands => [0.3, 0.5, 1.0, 1.0],
+        MapType::RedDesertBorderlands => [1.0, 0.3, 0.3, 1.0],
+        MapType::EdgeOfTheMists => [0.6, 0.3, 0.8, 1.0],
+        MapType::ObsidianSanctum => [0.4, 0.4, 0.4, 1.0],
+        _ => [0.5, 0.5, 0.5, 1.0],
+    }
 }

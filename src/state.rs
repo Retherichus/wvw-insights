@@ -5,6 +5,7 @@ use std::sync::{
 use std::thread;
 
 use crate::common::WorkerMessage;
+use crate::upload_review::UploadedFileInfo;
 use crate::logfile::LogFile;
 use crate::upload;
 
@@ -53,6 +54,9 @@ pub struct State {
     pub last_status_check: Mutex<Option<std::time::Instant>>,
     pub processing_progress: Mutex<f32>,
     pub processing_phase: Mutex<String>,
+    pub uploaded_files: Mutex<Vec<UploadedFileInfo>>,
+    pub processing_time_estimate: Mutex<Option<u32>>,
+    pub processing_time_estimate_start: Mutex<Option<std::time::Instant>>,
 
     // ============================================
     // UI Window Visibility
@@ -66,6 +70,7 @@ pub struct State {
     #[allow(dead_code)]
     pub show_recent_logs: Mutex<bool>,
     pub show_uploaded_logs: Mutex<bool>,
+    pub show_upload_review: Mutex<bool>,
 
     // ============================================
     // Token Generation (Main Page)
@@ -180,6 +185,9 @@ pub static STATE: State = State {
     last_status_check: Mutex::new(None),
     processing_progress: Mutex::new(0.0),
     processing_phase: Mutex::new(String::new()),
+    uploaded_files: Mutex::new(Vec::new()),
+    processing_time_estimate: Mutex::new(None),
+    processing_time_estimate_start: Mutex::new(None),
 
     // ============================================
     // UI Window Visibility
@@ -192,6 +200,7 @@ pub static STATE: State = State {
     show_settings: Mutex::new(false),
     show_recent_logs: Mutex::new(true),
     show_uploaded_logs: Mutex::new(true),
+    show_upload_review: Mutex::new(false),
 
     // ============================================
     // Token Generation (Main Page)

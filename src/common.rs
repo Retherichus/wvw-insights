@@ -6,6 +6,11 @@ pub struct WorkerMessage {
     pub payload: WorkerType,
 }
 
+#[derive(Debug)]
+pub enum WorkerType {
+    UploadResult(Result<String>),
+}
+
 impl WorkerMessage {
     pub fn upload_result(index: usize, result: Result<String>) -> Self {
         Self {
@@ -13,9 +18,4 @@ impl WorkerMessage {
             payload: WorkerType::UploadResult(result),
         }
     }
-}
-
-#[derive(Debug)]
-pub enum WorkerType {
-    UploadResult(Result<String>),
 }

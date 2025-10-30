@@ -90,12 +90,20 @@ pub fn render_results(ui: &Ui) {
     if ui.button("Upload More Logs") {
         log::info!("Upload More Logs button clicked");
         std::thread::spawn(|| {
-            log::info!("Resetting upload state");
+            log::info!("Resetting upload state and clearing session");
             
             // Mark uploaded logs BEFORE resetting state
             mark_uploaded_logs();
             
+            // Clear the session completely
+            log::info!("Clearing session data");
+            STATE.session_id.lock().unwrap().clear();
+            STATE.ownership_token.lock().unwrap().clear();
+            STATE.uploaded_files.lock().unwrap().clear();
+            
+            // Reset states
             reset_upload_state();
+            
             log::info!("State reset complete, starting log scan");
             scan_for_logs();
             log::info!("Log scan complete");
@@ -111,9 +119,20 @@ pub fn render_results(ui: &Ui) {
             // Mark uploaded logs BEFORE resetting state
             mark_uploaded_logs();
             
+            // Clear the session completely
+            log::info!("Clearing session data for back to start");
+            STATE.session_id.lock().unwrap().clear();
+            STATE.ownership_token.lock().unwrap().clear();
+            STATE.uploaded_files.lock().unwrap().clear();
+            
+            // Reset all states
             reset_upload_state();
+            
+            // Go to token input instead of log selection
             *STATE.show_log_selection.lock().unwrap() = false;
             *STATE.show_token_input.lock().unwrap() = true;
+            
+            log::info!("Back to start complete");
         });
     }
 

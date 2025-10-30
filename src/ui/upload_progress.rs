@@ -3,18 +3,67 @@ use nexus::imgui::{ChildWindow, ProgressBar, Ui};
 use crate::settings::Settings;
 use crate::state::{ProcessingState, STATE};
 
-/// Renders the upload progress screen
+/// File processing status for individual files
+#[derive(Clone, Debug)]
+enum FileStatus {
+    Pending,
+    Processing,
+    Complete,
+}
+
+/// Renders the upload progress screen with individual file tracking
 pub fn render_upload_progress(ui: &Ui) {
-    ui.text("Upload Progress");
+    let state = *STATE.processing_state.lock().unwrap();
+    
+    // Show total files in session at the top
+    let total_files = STATE.uploaded_files.lock().unwrap().len();
+    ui.text(format!("Upload Progress - {} file(s) in session", total_files));
     ui.separator();
 
     ChildWindow::new("UploadStatus")
         .size([0.0, 300.0])
         .build(ui, || {
-            let logs = STATE.logs.lock().unwrap();
-            for log in logs.iter() {
-                if log.selected {
-                    ui.text(format!("{}: {}", log.filename, log.status));
+            // During uploading, show the logs being uploaded with their status
+            if state == ProcessingState::Uploading {
+                let logs = STATE.logs.lock().unwrap();
+                let has_selected = logs.iter().any(|l| l.selected);
+                
+                if has_selected {
+                    for log in logs.iter() {
+                        if log.selected {
+                            ui.text(format!("{}: {}", log.filename, log.status));
+                        }
+                    }
+                } else {
+                    ui.text_colored([0.7, 0.7, 0.7, 1.0], "No files selected for upload");
+                }
+            } else if state == ProcessingState::Processing {
+                // Show file-by-file progress during processing
+                render_file_processing_status(ui);
+            } else {
+                // Show all files in the current session (Idle/Complete/Failed states)
+                let uploaded_files = STATE.uploaded_files.lock().unwrap();
+                
+                if uploaded_files.is_empty() {
+                    ui.text_colored([0.7, 0.7, 0.7, 1.0], "No files in session");
+                } else {
+                    for file in uploaded_files.iter() {
+                        let status_text = if state == ProcessingState::Complete {
+                            "[OK] Processed"
+                        } else {
+                            "Uploaded"
+                        };
+                        
+                        let status_color = if state == ProcessingState::Complete {
+                            [0.0, 1.0, 0.0, 1.0]
+                        } else {
+                            [0.7, 0.9, 1.0, 1.0]
+                        };
+                        
+                        ui.text(&file.filename);
+                        ui.same_line();
+                        ui.text_colored(status_color, &format!("- {}", status_text));
+                    }
                 }
             }
         });
@@ -29,33 +78,13 @@ pub fn render_upload_progress(ui: &Ui) {
             ui.spacing();
 
             if ui.button("Cancel Upload") {
-                ui.open_popup("cancel_upload_confirmation");
-            }
-
-            ui.popup_modal("cancel_upload_confirmation")
-                .always_auto_resize(true)
-                .build(ui, || {
-                    ui.text("Are you sure you want to cancel this job?");
-                    ui.spacing();
-                    ui.text_colored([1.0, 1.0, 0.0, 1.0], "The upload will be abandoned.");
-                    ui.spacing();
-
-                    if ui.button("Yes, Cancel") {
-                        ui.close_current_popup();
-                        std::thread::spawn(|| {
-                            log::info!("User cancelled upload");
-                            reset_upload_state();
-                            *STATE.show_log_selection.lock().unwrap() = false;
-                            *STATE.show_token_input.lock().unwrap() = true;
-                        });
-                    }
-
-                    ui.same_line();
-
-                    if ui.button("No, Continue") {
-                        ui.close_current_popup();
-                    }
+                std::thread::spawn(|| {
+                    log::info!("User cancelled upload");
+                    reset_upload_state();
+                    *STATE.show_log_selection.lock().unwrap() = false;
+                    *STATE.show_token_input.lock().unwrap() = true;
                 });
+            }
         }
         ProcessingState::Idle => {
             let logs = STATE.logs.lock().unwrap();
@@ -102,7 +131,6 @@ pub fn render_upload_progress(ui: &Ui) {
                             Err(e) => {
                                 log::error!("Failed to start processing: {}", e);
                                 *STATE.processing_state.lock().unwrap() = ProcessingState::Failed;
-                                // Store error message in the first position of report_urls vector
                                 *STATE.report_urls.lock().unwrap() = vec![format!("Server error: {}", e)];
                             }
                         }
@@ -112,36 +140,13 @@ pub fn render_upload_progress(ui: &Ui) {
                 ui.same_line();
 
                 if ui.button("Cancel") {
-                    ui.open_popup("cancel_before_processing");
-                }
-
-                ui.popup_modal("cancel_before_processing")
-                    .always_auto_resize(true)
-                    .build(ui, || {
-                        ui.text("Are you sure you want to cancel this job?");
-                        ui.spacing();
-                        ui.text_colored(
-                            [1.0, 1.0, 0.0, 1.0],
-                            "The uploaded files will be abandoned.",
-                        );
-                        ui.spacing();
-
-                        if ui.button("Yes, Cancel") {
-                            ui.close_current_popup();
-                            std::thread::spawn(|| {
-                                log::info!("User cancelled before processing");
-                                reset_upload_state();
-                                *STATE.show_log_selection.lock().unwrap() = false;
-                                *STATE.show_token_input.lock().unwrap() = true;
-                            });
-                        }
-
-                        ui.same_line();
-
-                        if ui.button("No, Continue") {
-                            ui.close_current_popup();
-                        }
+                    std::thread::spawn(|| {
+                        log::info!("User cancelled before processing");
+                        reset_upload_state();
+                        *STATE.show_log_selection.lock().unwrap() = false;
+                        *STATE.show_token_input.lock().unwrap() = true;
                     });
+                }
             } else {
                 ui.text("Uploading files...");
             }
@@ -163,6 +168,48 @@ pub fn render_upload_progress(ui: &Ui) {
             ui.text(format!("Progress: {:.0}%", progress));
             ProgressBar::new(progress_fraction).size([0.0, 0.0]).build(ui);
 
+            // Show time estimate countdown if available
+            let time_estimate = *STATE.processing_time_estimate.lock().unwrap();
+            let timer_start = *STATE.processing_time_estimate_start.lock().unwrap();
+            
+            if let (Some(estimate_seconds), Some(start_time)) = (time_estimate, timer_start) {
+                ui.spacing();
+                
+                let elapsed = start_time.elapsed().as_secs() as u32;
+                
+                if elapsed < estimate_seconds {
+                    // Countdown mode - still within estimate
+                    let remaining = estimate_seconds - elapsed;
+                    
+                    if remaining < 60 {
+                        ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} seconds remaining", remaining));
+                    } else {
+                        let minutes = remaining / 60;
+                        let seconds = remaining % 60;
+                        if seconds > 0 {
+                            ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} min {} sec remaining", minutes, seconds));
+                        } else {
+                            ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} minutes remaining", minutes));
+                        }
+                    }
+                } else {
+                    // Overdue mode - exceeded estimate
+                    let overdue = elapsed - estimate_seconds;
+                    
+                    if overdue < 60 {
+                        ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} seconds (still processing...)", overdue));
+                    } else {
+                        let minutes = overdue / 60;
+                        let seconds = overdue % 60;
+                        if seconds > 0 {
+                            ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} min {} sec (still processing...)", minutes, seconds));
+                        } else {
+                            ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} minutes (still processing...)", minutes));
+                        }
+                    }
+                }
+            }
+
             ui.spacing();
             ui.text_colored([1.0, 1.0, 0.0, 1.0], "This may take several minutes...");
 
@@ -171,46 +218,17 @@ pub fn render_upload_progress(ui: &Ui) {
             ui.spacing();
 
             if ui.button("Cancel Processing") {
-                ui.open_popup("cancel_processing");
-            }
-
-            ui.popup_modal("cancel_processing")
-                .always_auto_resize(true)
-                .build(ui, || {
-                    ui.text("Are you sure you want to cancel this job?");
-                    ui.spacing();
-                    ui.text_colored(
-                        [1.0, 1.0, 0.0, 1.0],
-                        "The server will finish processing in the background,",
-                    );
-                    ui.text_colored(
-                        [1.0, 1.0, 0.0, 1.0],
-                        "but you won't be able to see the results.",
-                    );
-                    ui.spacing();
-
-                    if ui.button("Yes, Cancel") {
-                        ui.close_current_popup();
-                        std::thread::spawn(|| {
-                            log::info!("User cancelled processing");
-                            reset_upload_state();
-                            *STATE.show_log_selection.lock().unwrap() = false;
-                            *STATE.show_token_input.lock().unwrap() = true;
-                        });
-                    }
-
-                    ui.same_line();
-
-                    if ui.button("No, Continue") {
-                        ui.close_current_popup();
-                    }
+                std::thread::spawn(|| {
+                    log::info!("User cancelled processing");
+                    reset_upload_state();
+                    *STATE.show_log_selection.lock().unwrap() = false;
+                    *STATE.show_token_input.lock().unwrap() = true;
                 });
+            }
         }
-        // In the ProcessingState::Complete section of upload_progress.rs:
         ProcessingState::Complete => {
             ui.text_colored([0.0, 1.0, 0.0, 1.0], "Processing complete!");
             
-            // Show all report URLs
             let report_urls = STATE.report_urls.lock().unwrap();
             if !report_urls.is_empty() {
                 ui.spacing();
@@ -239,7 +257,6 @@ pub fn render_upload_progress(ui: &Ui) {
             }
         }
         ProcessingState::Failed => {
-            // Get error message from report_urls (it's stored there as a single-element vector)
             let report_urls = STATE.report_urls.lock().unwrap();
             let error_message = report_urls.first().cloned().unwrap_or_default();
             drop(report_urls);
@@ -285,7 +302,6 @@ pub fn render_upload_progress(ui: &Ui) {
                         Err(e) => {
                             log::error!("Failed to start processing: {}", e);
                             *STATE.processing_state.lock().unwrap() = ProcessingState::Failed;
-                            // Store error message in the first position of report_urls vector
                             *STATE.report_urls.lock().unwrap() = vec![format!("Server error: {}", e)];
                         }
                     }
@@ -305,6 +321,101 @@ pub fn render_upload_progress(ui: &Ui) {
     }
 }
 
+/// Renders file-by-file processing status during the Processing state
+fn render_file_processing_status(ui: &Ui) {
+    let uploaded_files = STATE.uploaded_files.lock().unwrap();
+    let phase = STATE.processing_phase.lock().unwrap();
+    let progress = *STATE.processing_progress.lock().unwrap();
+    
+    // Extract file progress from the phase string
+    // Format: "Processing logs with Elite Insights (3/4)"
+    let (current_file, total_files) = extract_file_progress(&phase);
+    
+    if uploaded_files.is_empty() {
+        ui.text_colored([0.7, 0.7, 0.7, 1.0], "No files in session");
+        return;
+    }
+    
+    let total_uploaded = uploaded_files.len();
+    
+    // Determine status for each file
+    for (index, file) in uploaded_files.iter().enumerate() {
+        let file_number = index + 1;
+        
+        let status = if current_file > 0 && total_files > 0 {
+            // We have file tracking info from Elite Insights
+            if file_number < current_file {
+                FileStatus::Complete
+            } else if file_number == current_file {
+                FileStatus::Processing
+            } else {
+                FileStatus::Pending
+            }
+        } else if progress >= 25.0 {
+            // Elite Insights phase is complete (progress >= 25%), mark all files as complete
+            FileStatus::Complete
+        } else {
+            // No file tracking yet, just mark first file as processing
+            if index == 0 {
+                FileStatus::Processing
+            } else {
+                FileStatus::Pending
+            }
+        };
+        
+        render_file_item(ui, file, &status, file_number, total_uploaded);
+    }
+}
+
+/// Renders a single file item with its processing status
+fn render_file_item(ui: &Ui, file: &crate::upload_review::UploadedFileInfo, status: &FileStatus, file_num: usize, total: usize) {
+    let (icon, color) = match status {
+        FileStatus::Complete => ("[OK]", [0.0, 1.0, 0.0, 1.0]),
+        FileStatus::Processing => ("[>>]", [1.0, 0.8, 0.2, 1.0]),
+        FileStatus::Pending => ("[ ]", [0.5, 0.5, 0.5, 1.0]),
+    };
+    
+    let status_text = match status {
+        FileStatus::Complete => "Complete".to_string(),
+        FileStatus::Processing => format!("Processing ({}/{})", file_num, total),
+        FileStatus::Pending => "Pending".to_string(),
+    };
+    
+    // Icon
+    ui.text_colored(color, icon);
+    ui.same_line();
+    
+    // Filename
+    ui.text(&file.filename);
+    ui.same_line();
+    
+    // Status
+    ui.text_colored(color, &format!("- {}", status_text));
+}
+
+/// Extracts current file and total files from phase message
+/// Returns (current, total) or (0, 0) if not found
+fn extract_file_progress(phase: &str) -> (usize, usize) {
+    // Look for pattern like "Processing logs with Elite Insights (3/4)"
+    if let Some(start) = phase.rfind('(') {
+        if let Some(end) = phase.rfind(')') {
+            if end > start {
+                let progress_str = &phase[start + 1..end];
+                if let Some(slash_pos) = progress_str.find('/') {
+                    let current_str = &progress_str[..slash_pos];
+                    let total_str = &progress_str[slash_pos + 1..];
+                    
+                    if let (Ok(current), Ok(total)) = (current_str.parse::<usize>(), total_str.parse::<usize>()) {
+                        return (current, total);
+                    }
+                }
+            }
+        }
+    }
+    
+    (0, 0)
+}
+
 /// Resets the upload state to allow starting a new upload
 pub fn reset_upload_state() {
     log::info!("reset_upload_state: Starting");
@@ -314,6 +425,9 @@ pub fn reset_upload_state() {
 
     log::info!("reset_upload_state: Resetting show_results");
     *STATE.show_results.lock().unwrap() = false;
+
+    log::info!("reset_upload_state: Resetting show_upload_review");
+    *STATE.show_upload_review.lock().unwrap() = false;
 
     log::info!("reset_upload_state: Resetting processing_state");
     *STATE.processing_state.lock().unwrap() = ProcessingState::Idle;
@@ -327,6 +441,9 @@ pub fn reset_upload_state() {
     log::info!("reset_upload_state: Clearing ownership_token");
     STATE.ownership_token.lock().unwrap().clear();
 
+    log::info!("reset_upload_state: Clearing uploaded_files");
+    STATE.uploaded_files.lock().unwrap().clear();
+
     log::info!("reset_upload_state: Resetting last_status_check");
     *STATE.last_status_check.lock().unwrap() = None;
 
@@ -335,6 +452,12 @@ pub fn reset_upload_state() {
 
     log::info!("reset_upload_state: Clearing processing_phase");
     STATE.processing_phase.lock().unwrap().clear();
+    
+    log::info!("reset_upload_state: Clearing processing_time_estimate");
+    *STATE.processing_time_estimate.lock().unwrap() = None;
+    
+    log::info!("reset_upload_state: Clearing processing_time_estimate_start");
+    *STATE.processing_time_estimate_start.lock().unwrap() = None;
 
     log::info!("reset_upload_state: Locking logs for reset");
     let mut logs = STATE.logs.lock().unwrap();

@@ -12,6 +12,12 @@ thread_local! {
     static CLIENT: ureq::Agent = ureq::agent()
 }
 
+// Legacy overhead multiplier - MUST match JS version
+const LEGACY_INITIAL_MULTIPLIER: f32 = 2.00;
+thread_local! {
+    static HIGHEST_PROGRESS: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
 #[derive(Debug, Deserialize)]
 struct SessionResponse {
     success: bool,
@@ -26,6 +32,11 @@ struct UploadResponse {
     message: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DeleteResponse {
+    success: bool,
+    message: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 struct StatusResponse {
@@ -39,7 +50,6 @@ struct StatusResponse {
 
 #[derive(Debug, Deserialize)]
 struct LogEntry {
-    #[allow(dead_code)]
     message: String,
     #[serde(rename = "type")]
     #[allow(dead_code)]
@@ -56,7 +66,6 @@ struct FileEntry {
 struct Heartbeat {
     component: Option<String>,
 }
-
 
 pub fn create_session(api_endpoint: &str, history_token: &str) -> Result<(String, String)> {
     let url = format!("{}?endpoint=nexus-session", api_endpoint);
@@ -112,7 +121,6 @@ fn upload_file(
     let url = format!("{}?endpoint=nexus-upload", api_endpoint);
 
     CLIENT.with(|c| {
-        // Use the multipart builder to create form data
         let builder = ureq_multipart::MultipartBuilder::new()
             .add_text("session_id", session_id)?
             .add_text("history_token", history_token)?
@@ -135,6 +143,36 @@ fn upload_file(
     })
 }
 
+pub fn delete_file(
+    api_endpoint: &str,
+    session_id: &str,
+    filename: &str,
+) -> Result<String> {
+    log::info!("Deleting file: {} from session: {}", filename, session_id);
+
+    let url = format!("{}?endpoint=delete-upload", api_endpoint);
+
+    CLIENT.with(|c| {
+        let response = c
+            .post(&url)
+            .send_form(&[
+                ("session_id", session_id),
+                ("filename", filename),
+            ])?;
+
+        let delete_resp: DeleteResponse = response.into_json()?;
+        
+        if delete_resp.success {
+            let msg = delete_resp.message.unwrap_or_else(|| "File deleted".to_string());
+            log::info!("Delete successful: {}", msg);
+            Ok(msg)
+        } else {
+            let error = delete_resp.message.unwrap_or_else(|| "Unknown error".to_string());
+            Err(anyhow!("Delete failed: {}", error))
+        }
+    })
+}
+
 pub fn start_processing(
     api_endpoint: &str,
     session_id: &str,
@@ -145,14 +183,12 @@ pub fn start_processing(
 ) -> Result<String> {
     let url = format!("{}?endpoint=nexus-process", api_endpoint);
     
-    // Use the guild name if provided, otherwise use the default
     let final_guild_name = if guild_name.trim().is_empty() {
         "WvW Insights Parser (Nexus)"
     } else {
         guild_name
     };
     
-    // Convert bool to "0" or "1" for PHP
     let legacy_parser_value = if enable_legacy_parser { "1" } else { "0" };
     
     let response = CLIENT.with(|c| {
@@ -187,19 +223,110 @@ pub fn check_status(api_endpoint: &str, session_id: &str) -> Result<(String, Opt
     
     log::info!("Status: {} - Progress: {:?}", status_resp.status, status_resp.progress);
     
-    let progress = status_resp.progress.unwrap_or(0.0);
+    let raw_progress = status_resp.progress.unwrap_or(0.0);
     
     // Get current phase from heartbeat component
-    let phase = status_resp.heartbeat
-        .and_then(|h| h.component)
-        .map(|c| get_phase_message(&c, progress));
+    let current_component = status_resp.heartbeat
+        .as_ref()
+        .and_then(|h| h.component.as_ref())
+        .map(|s| s.as_str());
+    
+    let progress = HIGHEST_PROGRESS.with(|highest| {
+        let current_highest = highest.get();
+        if raw_progress > current_highest {
+            highest.set(raw_progress);
+            raw_progress
+        } else {
+            current_highest
+        }
+    });
+    
+    log::info!("Progress: raw={:.1}%, display={:.1}%", raw_progress, progress);
+    
+    // Get legacy parser setting from STATE (do this ONCE at the start)
+    let settings = crate::settings::Settings::get();
+    let enable_legacy_parser = settings.enable_legacy_parser;
+    drop(settings);
+    
+    // Check if we've already set initial estimate by checking STATE instead of thread_local
+    let mut has_set_initial = crate::state::STATE.processing_time_estimate.lock().unwrap().is_some();
+    
+    // Process logs for time estimates (mirroring JS logic)
+    if let Some(ref logs) = status_resp.logs {
+        for log in logs.iter() {
+            let msg = &log.message;
+            
+            // Extract initial TopStats estimate
+            let topstats_estimate = extract_time_estimate_from_log(msg);
+            
+            // Extract TopStats completion time
+            let topstats_completion = extract_completion_time_from_log(msg);
+            
+            // Initial Total Estimate (mirroring JS)
+            if let Some(estimate) = topstats_estimate {
+                if !has_set_initial {
+                    has_set_initial = true;
+                    
+                    let total_estimate = if enable_legacy_parser {
+                        let legacy_add = (estimate as f32 * LEGACY_INITIAL_MULTIPLIER).round() as u32;
+                        let total = estimate + legacy_add;
+                        log::info!("Initial estimate: TopStats {}s + Legacy {}s = {}s total", 
+                                 estimate, legacy_add, total);
+                        total
+                    } else {
+                        log::info!("Initial estimate: TopStats only {}s", estimate);
+                        estimate
+                    };
+                    
+                    *crate::state::STATE.processing_time_estimate.lock().unwrap() = Some(total_estimate);
+                    *crate::state::STATE.processing_time_estimate_start.lock().unwrap() = Some(std::time::Instant::now());
+                }
+            }
+            
+            // Update Timer When TopStats Actually Completes (mirroring JS)
+            if let Some(completion_time) = topstats_completion {
+                if enable_legacy_parser && has_set_initial {
+                    let current_estimate = *crate::state::STATE.processing_time_estimate.lock().unwrap();
+                    let new_remaining = (completion_time as f32 * LEGACY_INITIAL_MULTIPLIER).round() as u32;
+                    
+                    // Only update if we haven't already updated to the legacy-only time
+                    // Check if current estimate is significantly different from new_remaining
+                    if let Some(current) = current_estimate {
+                        if (current as i32 - new_remaining as i32).abs() > 10 {
+                            log::info!("TopStats done in {}s → updating remaining to Legacy only: ~{}s (old total: {}s)", 
+                                     completion_time, new_remaining, current);
+                            
+                            *crate::state::STATE.processing_time_estimate.lock().unwrap() = Some(new_remaining);
+                            *crate::state::STATE.processing_time_estimate_start.lock().unwrap() = Some(std::time::Instant::now());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Get current phase message
+    let phase = current_component.map(|c| {
+        // ONLY clear timer on actual completion/failure
+        let should_clear = matches!(c, "complete" | "failed");
+        
+        if should_clear {
+            let current_estimate = *crate::state::STATE.processing_time_estimate.lock().unwrap();
+            if current_estimate.is_some() {
+                log::info!("Phase {} - clearing timer (final state)", c);
+                *crate::state::STATE.processing_time_estimate.lock().unwrap() = None;
+                *crate::state::STATE.processing_time_estimate_start.lock().unwrap() = None;
+            }
+        }
+        
+        get_phase_message(&c, progress)
+    });
     
     let report_urls = if status_resp.status == "complete" {
         status_resp.files
             .map(|files| {
                 files.iter()
                     .filter_map(|f| {
-                        // Include both main and legacy reports
                         if f.name.contains("Report.html") || f.name.contains("LegacyReport.html") {
                             Some(f.url.clone())
                         } else {
@@ -213,6 +340,86 @@ pub fn check_status(api_endpoint: &str, session_id: &str) -> Result<(String, Opt
     };
     
     Ok((status_resp.status, report_urls, progress, phase))
+}
+
+fn extract_time_estimate_from_log(message: &str) -> Option<u32> {
+    let lower = message.to_lowercase();
+    
+    // Require BOTH json.gz and "estimated processing time" (matching JS)
+    if lower.contains("json.gz") && lower.contains("estimated processing time") {
+        // Minutes format (with decimals allowed)
+        if let Some(min_match) = extract_decimal_value(&lower, "estimated processing time:", "minute") {
+            return Some((min_match * 60.0).round() as u32);
+        }
+        
+        // Seconds format
+        if let Some(sec_match) = extract_integer_value(&lower, "estimated processing time:", "second") {
+            return Some(sec_match);
+        }
+    }
+    
+    None
+}
+
+fn extract_completion_time_from_log(message: &str) -> Option<u32> {
+    let lower = message.to_lowercase();
+    
+    // Match ONLY TopStats completion (not TW5/Legacy parser)
+    if lower.contains("topstats completed successfully in") {
+        if let Some(sec_match) = extract_decimal_value(&lower, "completed successfully in", "second") {
+            return Some(sec_match.round() as u32);
+        }
+    }
+    
+    None
+}
+
+// Helper to extract decimal values from text
+fn extract_decimal_value(text: &str, prefix: &str, suffix: &str) -> Option<f32> {
+    if let Some(prefix_pos) = text.find(prefix) {
+        let after_prefix = &text[prefix_pos + prefix.len()..];
+        
+        if let Some(suffix_pos) = after_prefix.find(suffix) {
+            let between = &after_prefix[..suffix_pos].trim();
+            
+            // Extract decimal number (digits and dots)
+            let number: String = between.chars()
+                .filter(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            
+            if !number.is_empty() {
+                if let Ok(value) = number.parse::<f32>() {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+// Helper to extract integer values from text
+fn extract_integer_value(text: &str, prefix: &str, suffix: &str) -> Option<u32> {
+    if let Some(prefix_pos) = text.find(prefix) {
+        let after_prefix = &text[prefix_pos + prefix.len()..];
+        
+        if let Some(suffix_pos) = after_prefix.find(suffix) {
+            let between = &after_prefix[..suffix_pos].trim();
+            
+            // Extract integer number
+            let number: String = between.chars()
+                .filter(|c| c.is_ascii_digit())
+                .collect();
+            
+            if !number.is_empty() {
+                if let Ok(value) = number.parse::<u32>() {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    
+    None
 }
 
 fn get_phase_message(component: &str, progress: f32) -> String {

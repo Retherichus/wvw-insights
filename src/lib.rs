@@ -35,6 +35,7 @@ use common::{WorkerMessage, WorkerType};
 use scanning::{check_auto_scan, update_scan_display};
 use settings::Settings;
 use state::{ProcessingState, STATE};
+mod upload_review;
 
 // Embed icon resources at compile time
 const ICON_NORMAL: &[u8] = include_bytes!("Icon.png");
@@ -125,7 +126,6 @@ fn check_upload_progress() {
     let state = *STATE.processing_state.lock().unwrap();
 
     if state == ProcessingState::Uploading {
-        // Check if all uploads are done
         let logs = STATE.logs.lock().unwrap();
         let selected_logs: Vec<_> = logs.iter().filter(|l| l.selected).collect();
         let total = selected_logs.len();
@@ -136,8 +136,12 @@ fn check_upload_progress() {
         drop(logs);
 
         if uploaded >= total && total > 0 {
-            log::info!("All uploads complete ({}/{})", uploaded, total);
+            log::info!("All uploads complete ({}/{}), showing review screen", uploaded, total);
+            
+            // Transition to review screen instead of idle
             *STATE.processing_state.lock().unwrap() = ProcessingState::Idle;
+            *STATE.show_upload_progress.lock().unwrap() = false;
+            *STATE.show_upload_review.lock().unwrap() = true;
         }
     } else if state == ProcessingState::Processing {
         // Poll for completion every 3 seconds
@@ -215,7 +219,6 @@ fn render_fn(ui: &Ui) {
     update_scan_display();
     qol::update_mouse_lock();
 
-    // Only show window if show_main_window is true
     let show_window = *STATE.show_main_window.lock().unwrap();
     if !show_window {
         return;
@@ -228,7 +231,6 @@ fn render_fn(ui: &Ui) {
         .opened(&mut is_open)
         .begin(ui)
     {
-        // Check for ESC key press to close the window (only when focused)
         if ui.is_window_focused() && ui.is_key_pressed(nexus::imgui::Key::Escape) {
             *STATE.show_main_window.lock().unwrap() = false;
             log::info!("Window closed with ESC key");
@@ -238,6 +240,7 @@ fn render_fn(ui: &Ui) {
         let show_token = *STATE.show_token_input.lock().unwrap();
         let show_logs = *STATE.show_log_selection.lock().unwrap();
         let show_progress = *STATE.show_upload_progress.lock().unwrap();
+        let show_review = *STATE.show_upload_review.lock().unwrap();
         let show_results = *STATE.show_results.lock().unwrap();
         let show_settings = *STATE.show_settings.lock().unwrap();
 
@@ -251,12 +254,13 @@ fn render_fn(ui: &Ui) {
             ui::render_log_selection(ui);
         } else if show_progress {
             ui::render_upload_progress(ui);
+        } else if show_review {
+            upload_review::render_upload_review(ui);
         } else if show_results {
             ui::render_results(ui);
         }
     }
     
-    // Update window visibility if user closed it
     if !is_open {
         *STATE.show_main_window.lock().unwrap() = false;
         log::info!("Window closed by user");
