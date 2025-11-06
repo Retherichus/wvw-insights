@@ -86,43 +86,45 @@ pub fn render_upload_progress(ui: &Ui) {
                 });
             }
         }
-        ProcessingState::Idle => {
-            let logs = STATE.logs.lock().unwrap();
-            let selected_logs: Vec<_> = logs.iter().filter(|l| l.selected).collect();
-            let total = selected_logs.len();
-            let uploaded = selected_logs
-                .iter()
-                .filter(|l| l.uploaded || l.status.starts_with("Failed"))
-                .count();
-            drop(logs);
+            ProcessingState::Idle => {
+                let logs = STATE.logs.lock().unwrap();
+                let selected_logs: Vec<_> = logs.iter().filter(|l| l.selected).collect();
+                let total = selected_logs.len();
+                let uploaded = selected_logs
+                    .iter()
+                    .filter(|l| l.uploaded || l.status.starts_with("Failed"))
+                    .count();
+                drop(logs);
 
-            if uploaded >= total && total > 0 {
-                ui.text_colored([0.0, 1.0, 0.0, 1.0], "All files uploaded successfully!");
-                ui.spacing();
+                if uploaded >= total && total > 0 {
+                    ui.text_colored([0.0, 1.0, 0.0, 1.0], "All files uploaded successfully!");
+                    ui.spacing();
 
-                if ui.button("Start Processing") {
-                    *STATE.processing_state.lock().unwrap() = ProcessingState::Processing;
+                    if ui.button("Start Processing") {
+                        *STATE.processing_state.lock().unwrap() = ProcessingState::Processing;
 
-                    std::thread::spawn(|| {
-                        let settings = Settings::get();
-                        let api_endpoint = settings.api_endpoint.clone();
-                        let history_token = settings.history_token.clone();
-                        let guild_name = settings.guild_name.clone();
-                        let enable_legacy_parser = settings.enable_legacy_parser;
-                        drop(settings);
+                        std::thread::spawn(|| {
+                            let settings = Settings::get();
+                            let api_endpoint = settings.api_endpoint.clone();
+                            let history_token = settings.history_token.clone();
+                            let guild_name = settings.guild_name.clone();
+                            let enable_legacy_parser = settings.enable_legacy_parser;
+                            let dps_report_token = settings.dps_report_token.clone(); // ADD THIS LINE
+                            drop(settings);
 
-                        let session_id = STATE.session_id.lock().unwrap().clone();
-                        let ownership_token = STATE.ownership_token.lock().unwrap().clone();
+                            let session_id = STATE.session_id.lock().unwrap().clone();
+                            let ownership_token = STATE.ownership_token.lock().unwrap().clone();
 
-                        log::info!("Starting processing with guild name: '{}', legacy parser: {}", guild_name, enable_legacy_parser);
-                        match crate::upload::start_processing(
-                            &api_endpoint,
-                            &session_id,
-                            &history_token,
-                            &ownership_token,
-                            &guild_name,
-                            enable_legacy_parser,
-                        ) {
+                            log::info!("Starting processing with guild name: '{}', legacy parser: {}", guild_name, enable_legacy_parser);
+                            match crate::upload::start_processing(
+                                &api_endpoint,
+                                &session_id,
+                                &history_token,
+                                &ownership_token,
+                                &guild_name,
+                                enable_legacy_parser,
+                                &dps_report_token,
+                            ) {
                             Ok(server_message) => {
                                 log::info!("Processing started successfully: {}", server_message);
                                 *STATE.last_status_check.lock().unwrap() =
@@ -155,63 +157,72 @@ pub fn render_upload_progress(ui: &Ui) {
             let progress = *STATE.processing_progress.lock().unwrap();
             let phase = STATE.processing_phase.lock().unwrap().clone();
 
-            if !phase.is_empty() {
-                ui.text(&phase);
-            } else {
-                ui.text("Processing logs on server...");
-            }
-
-            ui.spacing();
-
-            // Progress bar
-            let progress_fraction = progress / 100.0;
-            ui.text(format!("Progress: {:.0}%", progress));
-            ProgressBar::new(progress_fraction).size([0.0, 0.0]).build(ui);
-
-            // Show time estimate countdown if available
-            let time_estimate = *STATE.processing_time_estimate.lock().unwrap();
-            let timer_start = *STATE.processing_time_estimate_start.lock().unwrap();
-            
-            if let (Some(estimate_seconds), Some(start_time)) = (time_estimate, timer_start) {
+            // Check if we're in queued state (progress will be 0 and phase will contain "Queued")
+            if progress == 0.0 && phase.contains("Queued") {
+                ui.text_colored([1.0, 1.0, 0.0, 1.0], &phase);
                 ui.spacing();
-                
-                let elapsed = start_time.elapsed().as_secs() as u32;
-                
-                if elapsed < estimate_seconds {
-                    // Countdown mode - still within estimate
-                    let remaining = estimate_seconds - elapsed;
-                    
-                    if remaining < 60 {
-                        ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} seconds remaining", remaining));
-                    } else {
-                        let minutes = remaining / 60;
-                        let seconds = remaining % 60;
-                        if seconds > 0 {
-                            ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} min {} sec remaining", minutes, seconds));
-                        } else {
-                            ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} minutes remaining", minutes));
-                        }
-                    }
+                ui.text_colored([0.7, 0.9, 1.0, 1.0], "Your session is waiting in the processing queue...");
+                ui.spacing();
+                ui.text_colored([0.7, 0.7, 0.7, 1.0], "Processing will begin automatically when a slot becomes available.");
+            } else {
+                if !phase.is_empty() {
+                    ui.text(&phase);
                 } else {
-                    // Overdue mode - exceeded estimate
-                    let overdue = elapsed - estimate_seconds;
+                    ui.text("Processing logs on server...");
+                }
+
+                ui.spacing();
+
+                // Progress bar
+                let progress_fraction = progress / 100.0;
+                ui.text(format!("Progress: {:.0}%", progress));
+                ProgressBar::new(progress_fraction).size([0.0, 0.0]).build(ui);
+
+                // Show time estimate countdown if available
+                let time_estimate = *STATE.processing_time_estimate.lock().unwrap();
+                let timer_start = *STATE.processing_time_estimate_start.lock().unwrap();
+                
+                if let (Some(estimate_seconds), Some(start_time)) = (time_estimate, timer_start) {
+                    ui.spacing();
                     
-                    if overdue < 60 {
-                        ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} seconds (still processing...)", overdue));
-                    } else {
-                        let minutes = overdue / 60;
-                        let seconds = overdue % 60;
-                        if seconds > 0 {
-                            ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} min {} sec (still processing...)", minutes, seconds));
+                    let elapsed = start_time.elapsed().as_secs() as u32;
+                    
+                    if elapsed < estimate_seconds {
+                        // Countdown mode - still within estimate
+                        let remaining = estimate_seconds - elapsed;
+                        
+                        if remaining < 60 {
+                            ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} seconds remaining", remaining));
                         } else {
-                            ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} minutes (still processing...)", minutes));
+                            let minutes = remaining / 60;
+                            let seconds = remaining % 60;
+                            if seconds > 0 {
+                                ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} min {} sec remaining", minutes, seconds));
+                            } else {
+                                ui.text_colored([0.7, 0.9, 1.0, 1.0], &format!("Estimated: ~{} minutes remaining", minutes));
+                            }
+                        }
+                    } else {
+                        // Overdue mode - exceeded estimate
+                        let overdue = elapsed - estimate_seconds;
+                        
+                        if overdue < 60 {
+                            ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} seconds (still processing...)", overdue));
+                        } else {
+                            let minutes = overdue / 60;
+                            let seconds = overdue % 60;
+                            if seconds > 0 {
+                                ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} min {} sec (still processing...)", minutes, seconds));
+                            } else {
+                                ui.text_colored([1.0, 0.8, 0.2, 1.0], &format!("Overdue by {} minutes (still processing...)", minutes));
+                            }
                         }
                     }
                 }
-            }
 
-            ui.spacing();
-            ui.text_colored([1.0, 1.0, 0.0, 1.0], "This may take several minutes...");
+                ui.spacing();
+                ui.text_colored([1.0, 1.0, 0.0, 1.0], "This may take several minutes...");
+            }
 
             ui.spacing();
             ui.separator();
@@ -256,44 +267,46 @@ pub fn render_upload_progress(ui: &Ui) {
                 });
             }
         }
-        ProcessingState::Failed => {
-            let report_urls = STATE.report_urls.lock().unwrap();
-            let error_message = report_urls.first().cloned().unwrap_or_default();
-            drop(report_urls);
+            ProcessingState::Failed => {
+                let report_urls = STATE.report_urls.lock().unwrap();
+                let error_message = report_urls.first().cloned().unwrap_or_default();
+                drop(report_urls);
 
-            ui.text_colored([1.0, 0.0, 0.0, 1.0], "Processing failed!");
-            ui.spacing();
-
-            if !error_message.is_empty() {
-                ui.text("Server response:");
-                ui.text_colored([1.0, 0.5, 0.5, 1.0], &error_message);
+                ui.text_colored([1.0, 0.0, 0.0, 1.0], "Processing failed!");
                 ui.spacing();
-            }
 
-            if ui.button("Retry Processing") {
-                *STATE.processing_state.lock().unwrap() = ProcessingState::Processing;
-                STATE.report_urls.lock().unwrap().clear();
+                if !error_message.is_empty() {
+                    ui.text("Server response:");
+                    ui.text_colored([1.0, 0.5, 0.5, 1.0], &error_message);
+                    ui.spacing();
+                }
 
-                std::thread::spawn(|| {
-                    let settings = Settings::get();
-                    let api_endpoint = settings.api_endpoint.clone();
-                    let history_token = settings.history_token.clone();
-                    let guild_name = settings.guild_name.clone();
-                    let enable_legacy_parser = settings.enable_legacy_parser;
-                    drop(settings);
+                if ui.button("Retry Processing") {
+                    *STATE.processing_state.lock().unwrap() = ProcessingState::Processing;
+                    STATE.report_urls.lock().unwrap().clear();
 
-                    let session_id = STATE.session_id.lock().unwrap().clone();
-                    let ownership_token = STATE.ownership_token.lock().unwrap().clone();
+                    std::thread::spawn(|| {
+                        let settings = Settings::get();
+                        let api_endpoint = settings.api_endpoint.clone();
+                        let history_token = settings.history_token.clone();
+                        let guild_name = settings.guild_name.clone();
+                        let enable_legacy_parser = settings.enable_legacy_parser;
+                        let dps_report_token = settings.dps_report_token.clone(); // ADD THIS LINE
+                        drop(settings);
 
-                    log::info!("Retrying processing with guild name: '{}', legacy parser: {}", guild_name, enable_legacy_parser);
-                    match crate::upload::start_processing(
-                        &api_endpoint,
-                        &session_id,
-                        &history_token,
-                        &ownership_token,
-                        &guild_name,
-                        enable_legacy_parser,
-                    ) {
+                        let session_id = STATE.session_id.lock().unwrap().clone();
+                        let ownership_token = STATE.ownership_token.lock().unwrap().clone();
+
+                        log::info!("Retrying processing with guild name: '{}', legacy parser: {}", guild_name, enable_legacy_parser);
+                        match crate::upload::start_processing(
+                            &api_endpoint,
+                            &session_id,
+                            &history_token,
+                            &ownership_token,
+                            &guild_name,
+                            enable_legacy_parser,
+                            &dps_report_token,
+                        ) {
                         Ok(server_message) => {
                             log::info!("Processing started successfully: {}", server_message);
                             *STATE.last_status_check.lock().unwrap() =

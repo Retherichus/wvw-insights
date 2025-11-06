@@ -1,6 +1,6 @@
 [package]
 name = "wvw_insights"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 authors = ["Retherichus"]
 description = "Upload WvW logs for analysis on WvW Insights."

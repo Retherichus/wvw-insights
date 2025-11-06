@@ -46,6 +46,9 @@ struct StatusResponse {
     logs: Option<Vec<LogEntry>>,
     files: Option<Vec<FileEntry>>,
     heartbeat: Option<Heartbeat>,
+    // Queue support fields
+    queue_position: Option<i32>,
+    avg_service_time: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,14 +70,13 @@ struct Heartbeat {
     component: Option<String>,
 }
 
-pub fn create_session(api_endpoint: &str, history_token: &str) -> Result<(String, String)> {
+pub fn create_session(api_endpoint: &str, history_token: &str) -> Result<(String, String)> {  // REMOVE dps_report_token parameter
     let url = format!("{}?endpoint=nexus-session", api_endpoint);
     
     let response = CLIENT.with(|c| {
-        c.post(&url)
-            .send_form(&[
-                ("history_token", history_token),
-            ])
+        c.post(&url).send_form(&[
+            ("history_token", history_token),
+        ])
     })?;
 
     let session: SessionResponse = response.into_json()?;
@@ -121,12 +123,11 @@ fn upload_file(
     let url = format!("{}?endpoint=nexus-upload", api_endpoint);
 
     CLIENT.with(|c| {
-        let builder = ureq_multipart::MultipartBuilder::new()
+        let (content_type, data) = ureq_multipart::MultipartBuilder::new()
             .add_text("session_id", session_id)?
             .add_text("history_token", history_token)?
-            .add_file("file", &location)?;
-        
-        let (content_type, data) = builder.finish()?;
+            .add_file("file", &location)?
+            .finish()?;
         
         let response = c
             .post(&url)
@@ -180,6 +181,7 @@ pub fn start_processing(
     ownership_token: &str,
     guild_name: &str,
     enable_legacy_parser: bool,
+    dps_report_token: &str,
 ) -> Result<String> {
     let url = format!("{}?endpoint=nexus-process", api_endpoint);
     
@@ -192,14 +194,21 @@ pub fn start_processing(
     let legacy_parser_value = if enable_legacy_parser { "1" } else { "0" };
     
     let response = CLIENT.with(|c| {
-        c.post(&url)
-            .send_form(&[
-                ("session_id", session_id),
-                ("history_token", history_token),
-                ("ownership_token", ownership_token),
-                ("guild_name", final_guild_name),
-                ("enable_old_parser", legacy_parser_value),
-            ])
+        // Build form data dynamically to conditionally include dps_report_token
+        let mut form_data = vec![
+            ("session_id", session_id),
+            ("history_token", history_token),
+            ("ownership_token", ownership_token),
+            ("guild_name", final_guild_name),
+            ("enable_old_parser", legacy_parser_value),
+        ];
+        
+        // Only include dps_report_token if it's not empty
+        if !dps_report_token.is_empty() {
+            form_data.push(("dps_report_token", dps_report_token));
+        }
+        
+        c.post(&url).send_form(&form_data)
     })?;
 
     let resp: serde_json::Value = response.into_json()?;
@@ -222,6 +231,31 @@ pub fn check_status(api_endpoint: &str, session_id: &str) -> Result<(String, Opt
     let status_resp: StatusResponse = response.into_json()?;
     
     log::info!("Status: {} - Progress: {:?}", status_resp.status, status_resp.progress);
+    
+    // Handle queued status
+    if status_resp.status == "queued" {
+        let position = status_resp.queue_position.unwrap_or(0);
+        let per_user_minutes = status_resp.avg_service_time.unwrap_or(1.0);
+        let estimated_minutes = (position as f32 * per_user_minutes).round() as i32;
+        
+        let wait_text = if position <= 0 {
+            format!("Starting soon (~{:.0} minute)", per_user_minutes)
+        } else if estimated_minutes == 1 {
+            "Estimated wait: ~1 minute".to_string()
+        } else {
+            format!("Estimated wait: ~{} minutes", estimated_minutes)
+        };
+        
+        let phase = Some(format!(
+            "Queued for processing (Position: {}) - {} — typically ~{:.0} minute per user",
+            position, wait_text, per_user_minutes
+        ));
+        
+        log::info!("In queue at position {} - estimated wait: {} minutes", position, estimated_minutes);
+        
+        // Return queued status with 0% progress and the queue message
+        return Ok((status_resp.status, None, 0.0, phase));
+    }
     
     let raw_progress = status_resp.progress.unwrap_or(0.0);
     

@@ -71,6 +71,7 @@ pub struct State {
     pub show_recent_logs: Mutex<bool>,
     pub show_uploaded_logs: Mutex<bool>,
     pub show_upload_review: Mutex<bool>,
+    pub token_modal_should_close: Mutex<bool>,
 
     // ============================================
     // Token Generation (Main Page)
@@ -201,6 +202,7 @@ pub static STATE: State = State {
     show_recent_logs: Mutex::new(true),
     show_uploaded_logs: Mutex::new(true),
     show_upload_review: Mutex::new(false),
+    token_modal_should_close: Mutex::new(false),
 
     // ============================================
     // Token Generation (Main Page)

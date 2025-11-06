@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 
 // State change constants
 const CBTS_MAPID: u8 = 25;
@@ -159,7 +161,6 @@ pub struct LogFile {
     pub commander: Option<String>,
 }
 
-
 /// Parse agents from EVTC data
 fn parse_agents(data: &[u8]) -> Option<(Vec<EVTCAgent>, usize)> {
     if data.len() < 16 {
@@ -276,23 +277,74 @@ fn read_evtc_info_from_bytes(data: &[u8]) -> Option<(u16, MapType, Option<String
     Some((map_id, map_type, recorder, commander))
 }
 
-/// Efficiently reads info from EVTC file
-fn read_evtc_info(file_path: &std::path::Path) -> Option<(u16, MapType, Option<String>, Option<String>)> {
-    use std::fs::File;
-    use std::io::Read;
-    
+/// Read partial EVTC data (up to max_bytes)
+fn read_evtc_info_partial(file_path: &std::path::Path, max_bytes: usize) -> Option<(u16, MapType, Option<String>, Option<String>)> {
     let mut file = File::open(file_path).ok()?;
     
-    // Read first few bytes to check file type
+    // Read first 4 bytes to check file type
     let mut header_buffer = [0u8; 4];
     file.read_exact(&mut header_buffer).ok()?;
     
     // Check if it's a ZIP file
-    if header_buffer[0] == 0x50 && header_buffer[1] == 0x4B {
-        // For ZIP files, we need to decompress
-        drop(file);
+    let is_zip = header_buffer[0] == 0x50 && header_buffer[1] == 0x4B;
+    
+    if is_zip {
+        // For ZIP: decompress up to max_bytes
+        file.seek(SeekFrom::Start(0)).ok()?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).ok()?;
         
-        let mut file = File::open(file_path).ok()?;
+        if buffer.len() < 30 {
+            return None;
+        }
+        
+        let mut pos = 30;
+        let file_name_length = u16::from_le_bytes([buffer[26], buffer[27]]) as usize;
+        pos += file_name_length;
+        let extra_field_length = u16::from_le_bytes([buffer[28], buffer[29]]) as usize;
+        pos += extra_field_length;
+        
+        if pos >= buffer.len() {
+            return None;
+        }
+        
+        use flate2::read::DeflateDecoder;
+        let compressed_data = &buffer[pos..];
+        let mut decoder = DeflateDecoder::new(compressed_data);
+        
+        let mut decompressed_data = vec![0u8; max_bytes];
+        let bytes_read = decoder.read(&mut decompressed_data).ok()?;
+        decompressed_data.truncate(bytes_read);
+        
+        return read_evtc_info_from_bytes(&decompressed_data);
+    }
+    
+    // Uncompressed: read first max_bytes
+    file.seek(SeekFrom::Start(0)).ok()?;
+    let file_size = file.metadata().ok()?.len() as usize;
+    let read_size = file_size.min(max_bytes);
+    
+    let mut data = vec![0u8; read_size];
+    let bytes_read = file.read(&mut data).ok()?;
+    data.truncate(bytes_read);
+    
+    read_evtc_info_from_bytes(&data)
+}
+
+/// Read EVTC info from full file (fallback when partial read is incomplete)
+fn read_evtc_info_full(file_path: &std::path::Path) -> Option<(u16, MapType, Option<String>, Option<String>)> {
+    let mut file = File::open(file_path).ok()?;
+    
+    // Read first 4 bytes to check file type
+    let mut header_buffer = [0u8; 4];
+    file.read_exact(&mut header_buffer).ok()?;
+    
+    // Check if it's a ZIP file
+    let is_zip = header_buffer[0] == 0x50 && header_buffer[1] == 0x4B;
+    
+    if is_zip {
+        // For ZIP files, decompress fully
+        file.seek(SeekFrom::Start(0)).ok()?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).ok()?;
         
@@ -320,17 +372,16 @@ fn read_evtc_info(file_path: &std::path::Path) -> Option<(u16, MapType, Option<S
     }
     
     // Uncompressed EVTC
-    drop(file);
-    let mut file = File::open(file_path).ok()?;
+    file.seek(SeekFrom::Start(0)).ok()?;
     let mut data = Vec::new();
     file.read_to_end(&mut data).ok()?;
     
     read_evtc_info_from_bytes(&data)
 }
 
-
 impl LogFile {
-    pub fn new(path: PathBuf) -> anyhow::Result<Self> {
+    /// Create LogFile with optimized two-step metadata parsing
+    pub fn new_fast(path: PathBuf) -> anyhow::Result<Self> {
         let metadata = std::fs::metadata(&path)?;
         let filename = path
             .file_name()
@@ -343,11 +394,43 @@ impl LogFile {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
 
-        // Read all info efficiently
-        let (_map_id, map_type, recorder, commander) = read_evtc_info(&path).unwrap_or_else(|| {
-            log::warn!("Failed to read EVTC info from: {:?}", path);
-            (0, MapType::Unknown, None, None)
-        });
+        // OPTIMIZATION: Two-step scan like PHP
+        // Step 1: Try fast scan (500KB) - gets most metadata quickly
+        let (map_type, recorder, commander) = match read_evtc_info_partial(&path, 500_000) {
+            Some((_, map_type, Some(recorder), Some(commander))) => {
+                // Got everything! Fast path success
+                (map_type, Some(recorder), Some(commander))
+            }
+            Some((_, map_type, recorder, commander)) => {
+                // Got partial data, check if we need full scan
+                if map_type != MapType::Unknown && (recorder.is_some() || commander.is_some()) {
+                    // We got at least map + one of recorder/commander, try full scan to get the rest
+                    log::debug!("Partial data for {:?}, attempting full scan for complete info", path);
+                    read_evtc_info_full(&path)
+                        .map(|(_, mt, rec, cmd)| (mt, rec, cmd))
+                        .unwrap_or((map_type, recorder, commander))
+                } else if map_type != MapType::Unknown {
+                    // At least we got the map type
+                    (map_type, recorder, commander)
+                } else {
+                    // Didn't get much, try full scan
+                    log::debug!("Fast scan found little for {:?}, attempting full scan", path);
+                    read_evtc_info_full(&path)
+                        .map(|(_, mt, rec, cmd)| (mt, rec, cmd))
+                        .unwrap_or((MapType::Unknown, None, None))
+                }
+            }
+            None => {
+                // Fast scan failed completely, do full scan
+                log::debug!("Fast scan failed for {:?}, attempting full scan", path);
+                read_evtc_info_full(&path)
+                    .map(|(_, map_type, recorder, commander)| (map_type, recorder, commander))
+                    .unwrap_or_else(|| {
+                        log::warn!("Full scan also failed for: {:?}", path);
+                        (MapType::Unknown, None, None)
+                    })
+            }
+        };
 
         Ok(Self {
             path,

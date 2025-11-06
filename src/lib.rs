@@ -292,6 +292,21 @@ fn load() {
     if let Err(e) = UploadedLogs::from_path(&uploaded_path) {
         log::warn!("Failed to load uploaded logs history: {e}");
     }
+    
+    // Clean up uploaded logs older than 72 hours
+    {
+        let mut uploaded = UploadedLogs::get();
+        let removed = uploaded.cleanup_old_entries();
+        
+        // Save after cleanup if anything was removed
+        if removed > 0 {
+            if let Err(e) = uploaded.store(&uploaded_path) {
+                log::error!("Failed to save uploaded logs after cleanup: {}", e);
+            } else {
+                log::info!("Upload history cleanup complete: {} entries removed", removed);
+            }
+        }
+    }
 
     // Load webhook settings at startup
     let webhooks_path = webhooks_path();

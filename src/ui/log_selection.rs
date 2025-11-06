@@ -539,9 +539,9 @@ fn start_upload_process() {
             log::info!("Using existing session: {}", existing_session);
             existing_session
         } else {
-            // Create new session
+            // Create new session WITHOUT the token
             log::info!("Creating new session");
-            match crate::upload::create_session(&api_endpoint, &history_token) {
+            match crate::upload::create_session(&api_endpoint, &history_token) { 
                 Ok((sid, ot)) => {
                     log::info!("Session created: {}", sid);
                     *STATE.session_id.lock().unwrap() = sid.clone();
@@ -556,7 +556,7 @@ fn start_upload_process() {
             }
         }
     };
-
+    
     // Get selected logs
     let selected_logs: Vec<(usize, crate::logfile::LogFile)> = {
         let logs = STATE.logs.lock().unwrap();

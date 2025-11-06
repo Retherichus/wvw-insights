@@ -44,18 +44,18 @@ pub fn render_general_tab(ui: &Ui, _config_path: &std::path::Path) {
         }
     }
 
-    ui.text("Log Directory:");
-
-    // Log directory input
+    ui.text_colored([0.9, 0.9, 0.9, 1.0], "Log Directory:");
     LOG_DIR_BUFFER.with_borrow_mut(|dir| {
-        ui.input_text("##logdir", dir)
-            .hint("e.g., D:\\LOGS\\arcdps.cbtlogs\\1")
-            .build();
+        ui.input_text("##logdir", dir).build();
     });
+    ui.text_colored(
+        [0.6, 0.6, 0.6, 1.0],
+        "(e.g., D:\\LOGS\\arcdps.cbtlogs\\1)",
+    );
 
-    // Sync with ArcDPS button (same line)
-    ui.same_line();
+    ui.spacing();
 
+    // Sync with ArcDPS button
     let is_syncing = *STATE.sync_arcdps_pending.lock().unwrap();
     if is_syncing {
         let _style = ui.push_style_color(nexus::imgui::StyleColor::Button, [0.3, 0.3, 0.3, 0.5]);
@@ -97,11 +97,11 @@ pub fn render_general_tab(ui: &Ui, _config_path: &std::path::Path) {
     }
 
     ui.text_colored(
-        [0.7, 0.7, 0.7, 1.0],
+        [0.6, 0.6, 0.6, 1.0],
         "The folder containing your .zevtc log files",
     );
     ui.text_colored(
-        [0.7, 0.7, 0.7, 1.0],
+        [0.6, 0.6, 0.6, 1.0],
         "Subdirectories will be scanned recursively",
     );
 
@@ -115,7 +115,7 @@ pub fn render_general_tab(ui: &Ui, _config_path: &std::path::Path) {
         SHOW_FORMATTED.set(show_formatted);
     }
     ui.text_colored(
-        [0.7, 0.7, 0.7, 1.0],
+        [0.6, 0.6, 0.6, 1.0],
         "Display readable dates instead of raw filenames",
     );
 
@@ -123,19 +123,20 @@ pub fn render_general_tab(ui: &Ui, _config_path: &std::path::Path) {
     ui.separator();
     ui.spacing();
 
-    ui.text("API Endpoint:");
+    ui.text_colored([0.9, 0.9, 0.9, 1.0], "API Endpoint:");
     API_ENDPOINT_BUFFER.with_borrow_mut(|endpoint| {
         ui.input_text("##apiendpoint", endpoint).build();
     });
+    ui.text_colored(
+        [0.6, 0.6, 0.6, 1.0],
+        "(Leave as default unless instructed otherwise)",
+    );
+
+    ui.spacing();
 
     if ui.button("Reset to Default") {
         API_ENDPOINT_BUFFER.set("https://parser.rethl.net/api.php".to_string());
     }
-
-    ui.text_colored(
-        [0.9, 0.9, 0.9, 1.0],
-        "Leave as default unless instructed otherwise",
-    );
 
     ui.spacing();
     ui.separator();
@@ -152,16 +153,16 @@ pub fn render_general_tab(ui: &Ui, _config_path: &std::path::Path) {
     
     ui.text_colored([1.0, 0.3, 0.0, 1.0], "WARNING - NOT RECOMMENDED");
     ui.text_colored(
-        [0.9, 0.9, 0.9, 1.0],
+        [0.6, 0.6, 0.6, 1.0],
         "Legacy reports are outdated and double processing time.",
     );
     ui.text_colored(
-        [0.9, 0.9, 0.9, 1.0],
+        [0.6, 0.6, 0.6, 1.0],
         "The default Log Combiner is sufficient for all use cases.",
     );
     ui.text_colored(
-        [0.9, 0.9, 0.9, 1.0],
-        "Enable only if you absolutely can’t live without it. :(",
+        [0.6, 0.6, 0.6, 1.0],
+        "Enable only if you absolutely can't live without it. :(",
     );
 }
 

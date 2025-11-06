@@ -30,6 +30,10 @@ pub struct Settings {
     pub guild_name: String,
     #[serde(default)]
     pub enable_legacy_parser: bool,
+    #[serde(default)]
+    pub dps_report_token: String,
+    #[serde(default)]
+    pub saved_dps_tokens: Vec<SavedToken>,    
 }
 
 fn default_cleanup_days() -> u32 {
@@ -48,24 +52,27 @@ impl Settings {
             log_directory: String::new(),
             show_formatted_timestamps: true,
             saved_tokens: Vec::new(),
+            saved_dps_tokens: Vec::new(),
             auto_cleanup_enabled: false,
             auto_cleanup_days: 30,
             mouse_lock_enabled: false,
             guild_name: String::new(),
             enable_legacy_parser: false,
+            dps_report_token: String::new(),
         }
     }
-
 
     pub fn init(&mut self) {
         self.api_endpoint = "https://parser.rethl.net/api.php".to_string();
         self.log_directory = Self::default_log_dir().display().to_string();
         self.show_formatted_timestamps = true;
+        self.saved_dps_tokens = Vec::new();
         self.auto_cleanup_enabled = false;
         self.auto_cleanup_days = 30;
         self.mouse_lock_enabled = false;
         self.guild_name = String::new();
         self.enable_legacy_parser = false;
+        self.dps_report_token = String::new();
     }
 
     pub fn get() -> MutexGuard<'static, Self> {
@@ -147,12 +154,22 @@ impl Settings {
         let path = path.as_ref();
         let prefix = path.parent().unwrap();
         create_dir_all(prefix)?;
+        
+        // Create a copy to validate and potentially fix before saving
+        let mut settings_to_save = self.clone();
+        
+        // CRITICAL: Never save with empty api_endpoint
+        if settings_to_save.api_endpoint.is_empty() {
+            log::warn!("Attempted to save settings with empty api_endpoint, using default");
+            settings_to_save.api_endpoint = "https://parser.rethl.net/api.php".to_string();
+        }
+        
         let mut file = File::options()
             .write(true)
             .create(true)
             .truncate(true)
             .open(path)?;
-        serde_json::to_writer_pretty(&mut file, self)?;
+        serde_json::to_writer_pretty(&mut file, &settings_to_save)?;
         Ok(())
     }
 }

@@ -60,13 +60,22 @@ pub fn render_upload_review(ui: &Ui) {
                 });
             }
         } else {
+            // PROPERLY disable the button when no files
             let _style = ui.push_style_color(nexus::imgui::StyleColor::Button, [0.3, 0.3, 0.3, 0.5]);
+            let _style2 = ui.push_style_color(nexus::imgui::StyleColor::ButtonHovered, [0.3, 0.3, 0.3, 0.5]);
+            let _style3 = ui.push_style_color(nexus::imgui::StyleColor::ButtonActive, [0.3, 0.3, 0.3, 0.5]);
+            let _style4 = ui.push_style_color(nexus::imgui::StyleColor::Text, [0.5, 0.5, 0.5, 0.5]);
+            
             ui.button("Start Processing");
+            
+            if ui.is_item_hovered() {
+                ui.tooltip_text("No files uploaded to process");
+            }
         }
         
         ui.same_line();
         
-        // Upload More button
+        // Upload More button - this should always be enabled
         if ui.button("Upload More Logs") {
             log::info!("Returning to log selection to upload more files");
             
@@ -188,6 +197,7 @@ fn start_processing_wrapper() {
     let history_token = settings.history_token.clone();
     let guild_name = settings.guild_name.clone();
     let enable_legacy = settings.enable_legacy_parser;
+    let dps_report_token = settings.dps_report_token.clone();
     drop(settings);
     
     let session_id = STATE.session_id.lock().unwrap().clone();
@@ -209,6 +219,7 @@ fn start_processing_wrapper() {
         &ownership_token,
         &guild_name,
         enable_legacy,
+        &dps_report_token,
     ) {
         Ok(message) => {
             log::info!("Processing started: {}", message);

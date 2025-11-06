@@ -46,25 +46,23 @@ pub fn render_webhooks_tab(ui: &Ui, _config_path: &std::path::Path) {
     ui.text("Add New Webhook:");
     ui.spacing();
     
-    // Label for name field
-    ui.text("Webhook Name:");
+    // Label for name field - matching tokens.rs style
+    ui.text_colored([0.9, 0.9, 0.9, 1.0], "Webhook Name:");
     WEBHOOK_NAME_BUFFER.with(|name| {
         let mut name_mut = name.borrow_mut();
-        ui.input_text("##webhook_name", &mut *name_mut)
-            .hint("e.g., 'Main Guild', 'WvW Squad'")
-            .build();
+        ui.input_text("##webhook_name", &mut *name_mut).build();
     });
+    ui.text_colored([0.6, 0.6, 0.6, 1.0], "(e.g., Main Guild, WvW Squad)");
 
     ui.spacing();
     
-    // Label for URL field
-    ui.text("Webhook URL:");
+    // Label for URL field - matching tokens.rs style
+    ui.text_colored([0.9, 0.9, 0.9, 1.0], "Webhook URL:");
     WEBHOOK_URL_BUFFER.with(|url| {
         let mut url_mut = url.borrow_mut();
-        ui.input_text("##webhook_url", &mut *url_mut)
-            .hint("https://discord.com/api/webhooks/...")
-            .build();
+        ui.input_text("##webhook_url", &mut *url_mut).build();
     });
+    ui.text_colored([0.6, 0.6, 0.6, 1.0], "(https://discord.com/api/webhooks/...)");
 
     ui.spacing();
 

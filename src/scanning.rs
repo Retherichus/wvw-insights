@@ -82,7 +82,7 @@ fn scan_dir_recursive(
                             }
                             
                             // File is recent enough, now parse it to determine map type
-                            if let Ok(log) = LogFile::new(entry.path()) {
+                            if let Ok(log) = LogFile::new_fast(entry.path()) {
                                 // Only include WvW logs (filters out PvE/Unknown)
                                 if log.map_type.is_wvw() {
                                     logs.push(log);
